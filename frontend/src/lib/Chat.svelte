@@ -1,13 +1,18 @@
 <script>
-  import { chatMessages, currentFen, currentError } from "../stores.js";
+  import { chatMessages, currentFen, currentError, history, currentIndex } from "../stores.js";
 
   let question = "";
   let streaming = false;
   let messagesEl;
 
   $: if ($currentError && !question) {
-    const move = $currentError.player_move;
-    question = `Why is ${move} a blunder here?`;
+    question = `Why is ${$currentError.player_move} a blunder here?`;
+  }
+
+  $: contextMove = $history[$currentIndex];
+
+  function now() {
+    return new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
   }
 
   async function sendQuestion() {
@@ -15,8 +20,8 @@
 
     const userMsg = question.trim();
     question = "";
-    chatMessages.update((msgs) => [...msgs, { role: "user", text: userMsg }]);
-    chatMessages.update((msgs) => [...msgs, { role: "assistant", text: "" }]);
+    chatMessages.update((msgs) => [...msgs, { role: "user", text: userMsg, time: now() }]);
+    chatMessages.update((msgs) => [...msgs, { role: "assistant", text: "", time: now() }]);
 
     streaming = true;
 
@@ -29,7 +34,7 @@
           player_move: $currentError?.player_move ?? "",
           best_move: $currentError?.best_move ?? "",
           eval_drop_cp: $currentError?.eval_drop_cp ?? 0,
-          themes: $currentError?.themes ?? "",
+          concept_name: $currentError?.concept_name ?? "",
           question: userMsg,
         }),
       });
@@ -44,7 +49,7 @@
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
-        buffer = lines.pop(); // keep incomplete line
+        buffer = lines.pop();
 
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
@@ -54,10 +59,7 @@
             const { text } = JSON.parse(payload);
             chatMessages.update((msgs) => {
               const copy = [...msgs];
-              copy[copy.length - 1] = {
-                ...copy[copy.length - 1],
-                text: copy[copy.length - 1].text + text,
-              };
+              copy[copy.length - 1] = { ...copy[copy.length - 1], text: copy[copy.length - 1].text + text };
               return copy;
             });
           } catch {}
@@ -66,7 +68,7 @@
     } catch (e) {
       chatMessages.update((msgs) => {
         const copy = [...msgs];
-        copy[copy.length - 1] = { role: "assistant", text: "Error: " + e.message };
+        copy[copy.length - 1] = { role: "assistant", text: "Error: " + e.message, time: now() };
         return copy;
       });
     } finally {
@@ -80,16 +82,26 @@
 </script>
 
 <div class="chat">
-  <div class="chat-label">Chat with Claude</div>
+  {#if contextMove?.san}
+    <div class="context-chip">Move {contextMove.move_number} · {contextMove.san}</div>
+  {/if}
   <div class="messages" bind:this={messagesEl}>
     {#each $chatMessages as msg}
-      <div class="msg {msg.role}">
-        <span class="role">{msg.role === "user" ? "You" : "Claude"}</span>
-        <p>{msg.text}</p>
+      <div class="bubble-wrap {msg.role}">
+        <div class="bubble">
+          <p>{msg.text}</p>
+        </div>
+        {#if msg.time}
+          <span class="ts">{msg.time}</span>
+        {/if}
       </div>
     {/each}
     {#if streaming}
-      <div class="typing">Claude is thinking…</div>
+      <div class="typing-wrap">
+        <div class="typing">
+          <span></span><span></span><span></span>
+        </div>
+      </div>
     {/if}
   </div>
   <div class="input-row">
@@ -99,9 +111,7 @@
       placeholder="Ask about this position…"
       on:keydown={(e) => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), sendQuestion())}
     ></textarea>
-    <button on:click={sendQuestion} disabled={streaming || !question.trim()}>
-      Ask
-    </button>
+    <button class="send-btn" on:click={sendQuestion} disabled={streaming || !question.trim()} title="Send">→</button>
   </div>
 </div>
 
@@ -109,66 +119,129 @@
   .chat {
     display: flex;
     flex-direction: column;
-    gap: 6px;
     flex: 1;
     min-height: 0;
+    overflow: hidden;
+    height: 100%;
+    padding: 10px 12px;
+    gap: 8px;
   }
-  .chat-label {
+  .context-chip {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 3px 10px;
     font-size: 11px;
-    text-transform: uppercase;
-    color: #666;
-    letter-spacing: 0.5px;
+    color: var(--text-dim);
+    align-self: center;
+    font-family: var(--font-mono);
+    flex-shrink: 0;
   }
   .messages {
     flex: 1;
     overflow-y: auto;
-    background: #16213e;
-    border-radius: 4px;
-    padding: 8px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    min-height: 80px;
+    gap: 10px;
+    padding: 4px 0;
   }
-  .msg { font-size: 13px; }
-  .role {
+  .bubble-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    max-width: 85%;
+  }
+  .bubble-wrap.user {
+    align-self: flex-end;
+    align-items: flex-end;
+  }
+  .bubble-wrap.assistant {
+    align-self: flex-start;
+    align-items: flex-start;
+  }
+  .bubble {
+    padding: 8px 12px;
+    border-radius: 12px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .bubble-wrap.user .bubble {
+    background: var(--accent-dim);
+    color: #fff;
+    border-bottom-right-radius: 4px;
+  }
+  .bubble-wrap.assistant .bubble {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-bottom-left-radius: 4px;
+  }
+  .bubble p { margin: 0; white-space: pre-wrap; }
+  .ts {
     font-size: 10px;
-    font-weight: bold;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    display: block;
-    margin-bottom: 2px;
+    color: var(--text-dim);
+    padding: 0 4px;
   }
-  .msg.user .role { color: #a9cce3; }
-  .msg.assistant .role { color: #a9dfbf; }
-  .msg p { margin: 0; line-height: 1.5; white-space: pre-wrap; }
-  .typing { font-size: 12px; color: #888; font-style: italic; }
+  .typing-wrap { align-self: flex-start; }
+  .typing {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    border-bottom-left-radius: 4px;
+    padding: 10px 14px;
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  .typing span {
+    width: 6px;
+    height: 6px;
+    background: var(--text-dim);
+    border-radius: 50%;
+    animation: bounce 1.2s infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: 0.2s; }
+  .typing span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes bounce {
+    0%, 60%, 100% { transform: translateY(0); }
+    30% { transform: translateY(-5px); }
+  }
   .input-row {
     display: flex;
     gap: 6px;
     align-items: flex-end;
+    flex-shrink: 0;
   }
   textarea {
     flex: 1;
-    padding: 6px 8px;
-    background: #16213e;
-    border: 1px solid #0f3460;
-    border-radius: 4px;
-    color: #e0e0e0;
+    padding: 8px 10px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
     font-size: 13px;
     resize: none;
-    font-family: inherit;
+    font-family: var(--font-ui);
+    outline: none;
+    transition: border-color 0.15s;
   }
-  button {
-    padding: 6px 14px;
-    background: #0f3460;
+  textarea:focus { border-color: var(--accent); }
+  textarea::placeholder { color: var(--text-dim); }
+  .send-btn {
+    width: 34px;
+    height: 34px;
+    background: var(--accent);
     border: none;
-    border-radius: 4px;
-    color: #e0e0e0;
+    border-radius: var(--radius-sm);
+    color: #fff;
     cursor: pointer;
-    font-size: 13px;
-    align-self: stretch;
+    font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+    flex-shrink: 0;
   }
-  button:hover { background: #1a5276; }
-  button:disabled { opacity: 0.5; cursor: default; }
+  .send-btn:hover:not(:disabled) { background: var(--accent-dim); }
+  .send-btn:disabled { opacity: 0.4; cursor: default; }
 </style>

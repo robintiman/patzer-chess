@@ -4,10 +4,30 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Patzer Review</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
       *, *::before, *::after { box-sizing: border-box; }
       html, body { margin: 0; padding: 0; height: 100%; }
-      body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; }
+      :root {
+        --bg: #0e0e0e;
+        --surface: #1a1a1a;
+        --surface2: #242424;
+        --border: #2e2e2e;
+        --accent: #81b64c;
+        --accent-dim: #5a7f34;
+        --accent-muted: rgba(129,182,76,0.12);
+        --text: #e8e8e8;
+        --text-muted: #b0b0b0;
+        --text-dim: #686868;
+        --font-ui: 'DM Sans', system-ui, sans-serif;
+        --font-mono: 'JetBrains Mono', monospace;
+        --radius: 6px;
+        --radius-sm: 4px;
+      }
+      body { background: var(--bg); color: var(--text); font-family: var(--font-ui); font-size: 14px; }
+      * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
     </style>
   </head>
   <body>

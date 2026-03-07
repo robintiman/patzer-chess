@@ -12,60 +12,58 @@
         body: JSON.stringify({ fen: $currentFen, depth: 14 }),
       });
       if (res.ok) {
-        const data = await res.json();
-        currentAnalysis.set(data);
+        currentAnalysis.set(await res.json());
       }
     } finally {
       analysing = false;
     }
   }
 
-  $: themes = $currentError?.themes?.trim().split(/\s+/).filter(Boolean) ?? [];
+  $: themes = $currentError?.concept_name?.trim().split(/[\s,]+/).filter(Boolean) ?? [];
   $: evalDrop = $currentError?.eval_drop_cp ?? null;
   $: bestMove = $currentAnalysis?.best_move ?? $currentError?.best_move ?? null;
-  $: pv = $currentAnalysis?.pv ?? [];
+  $: pvLine = $currentError?.pv_san ?? $currentAnalysis?.pv?.join(" ") ?? "";
 </script>
 
 <div class="panel">
-  <div class="section">
-    <div class="label">Evaluation</div>
-    <div class="value">
-      {#if $currentAnalysis?.eval_cp !== undefined}
-        {($currentAnalysis.eval_cp / 100).toFixed(2)}
-      {:else}
-        —
-      {/if}
-    </div>
-  </div>
-
-  {#if bestMove}
-    <div class="section">
-      <div class="label">Best move</div>
-      <div class="value mono">{bestMove}</div>
-    </div>
-  {/if}
-
-  {#if pv.length > 0}
-    <div class="section">
-      <div class="label">PV</div>
-      <div class="value mono small">{pv.join(" ")}</div>
-    </div>
-  {/if}
-
   <button class="analyse-btn" on:click={analysePosition} disabled={analysing}>
     {analysing ? "Analysing…" : "Analyse Position"}
   </button>
 
   {#if $currentError}
-    <div class="error-section">
-      <div class="error-header">Error detected</div>
-      <div class="eval-drop">−{(evalDrop / 100).toFixed(2)} pawns</div>
-      <div class="themes">
-        {#each themes as theme}
-          <span class="badge">{theme}</span>
-        {/each}
+    <div class="error-card">
+      <div class="card-header">
+        <div class="move-badge">{$currentError.move_number}. {$currentError.player_move}</div>
+        {#if evalDrop !== null}
+          <div class="eval-drop-chip">▼ −{(evalDrop / 100).toFixed(1)}</div>
+        {/if}
       </div>
+
+      {#if $currentError.concept_explanation}
+        <p class="description">{$currentError.concept_explanation}</p>
+      {/if}
+
+      {#if themes.length > 0}
+        <div class="themes">
+          {#each themes as theme}
+            <span class="theme-tag">{theme}</span>
+          {/each}
+        </div>
+      {/if}
+
+      {#if bestMove}
+        <div class="best-move-row">
+          <span class="best-label">Best move</span>
+          <span class="best-value">{bestMove}</span>
+        </div>
+      {/if}
+
+      {#if pvLine}
+        <div class="pv-line">{pvLine}</div>
+      {/if}
     </div>
+  {:else}
+    <div class="empty-state">No error at this position</div>
   {/if}
 </div>
 
@@ -74,63 +72,112 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+    flex: 1;
+    overflow-y: auto;
   }
-  .section {
-    background: #16213e;
-    border-radius: 4px;
-    padding: 8px 10px;
-  }
-  .label {
-    font-size: 10px;
-    text-transform: uppercase;
-    color: #666;
-    margin-bottom: 2px;
-    letter-spacing: 0.5px;
-  }
-  .value {
-    font-size: 16px;
-    font-weight: bold;
-    color: #a9cce3;
-  }
-  .mono { font-family: monospace; }
-  .small { font-size: 12px; }
   .analyse-btn {
-    padding: 8px;
-    background: #0f3460;
-    border: none;
-    border-radius: 4px;
-    color: #e0e0e0;
+    padding: 9px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
     cursor: pointer;
     font-size: 13px;
+    font-family: var(--font-ui);
     width: 100%;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
   }
-  .analyse-btn:hover { background: #1a5276; }
+  .analyse-btn:hover:not(:disabled) {
+    background: var(--accent-muted);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
   .analyse-btn:disabled { opacity: 0.5; cursor: default; }
-  .error-section {
-    background: #2c1b1b;
-    border: 1px solid #c0392b;
-    border-radius: 4px;
-    padding: 10px;
+  .error-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
   }
-  .error-header {
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .move-badge {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 3px 8px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text);
+  }
+  .eval-drop-chip {
+    background: rgba(192,57,43,0.15);
+    border: 1px solid rgba(192,57,43,0.3);
+    color: #e74c3c;
+    border-radius: var(--radius-sm);
+    padding: 3px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+  }
+  .description {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-muted);
+    line-height: 1.55;
+  }
+  .themes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+  .theme-tag {
+    background: var(--accent-muted);
+    color: var(--accent);
+    border: 1px solid rgba(129,182,76,0.3);
+    border-radius: var(--radius-sm);
+    padding: 2px 8px;
+    font-size: 11px;
+  }
+  .best-move-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .best-label {
     font-size: 11px;
     text-transform: uppercase;
-    color: #e74c3c;
+    color: var(--text-dim);
     letter-spacing: 0.5px;
-    margin-bottom: 4px;
   }
-  .eval-drop {
-    font-size: 20px;
-    font-weight: bold;
-    color: #e74c3c;
-    margin-bottom: 6px;
+  .best-value {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text);
   }
-  .themes { display: flex; flex-wrap: wrap; gap: 4px; }
-  .badge {
-    background: #4a1942;
-    color: #d7bde2;
-    border-radius: 3px;
-    padding: 2px 6px;
+  .pv-line {
+    font-family: var(--font-mono);
     font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .empty-state {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    font-size: 13px;
+    padding: 20px;
+    text-align: center;
   }
 </style>

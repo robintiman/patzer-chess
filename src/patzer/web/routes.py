@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import chess
@@ -26,6 +27,11 @@ def close_db(error=None):
         db.close()
 
 
+def _pgn_header(pgn: str, tag: str) -> str:
+    m = re.search(rf'\[{tag} "([^"]+)"\]', pgn)
+    return m.group(1) if m else "?"
+
+
 @bp.get("/games")
 def list_games():
     username = request.args.get("username", "")
@@ -34,7 +40,7 @@ def list_games():
     rows = db.execute(
         """
         SELECT g.id, g.game_id, g.source, g.result, g.time_control, g.played_at,
-               COUNT(p.id) AS error_count
+               g.pgn_text, COUNT(p.id) AS error_count
         FROM players pl
         JOIN games g ON g.player_id = pl.id
         LEFT JOIN positions p ON p.game_id = g.id
@@ -45,7 +51,17 @@ def list_games():
         (username,),
     ).fetchall()
 
-    return jsonify([dict(r) for r in rows])
+    result = []
+    for r in rows:
+        d = dict(r)
+        pgn = d.pop("pgn_text", "") or ""
+        white = _pgn_header(pgn, "White")
+        black = _pgn_header(pgn, "Black")
+        is_white = username.lower() in white.lower()
+        d["opponent"] = black if is_white else white
+        d["player_color"] = "white" if is_white else "black"
+        result.append(d)
+    return jsonify(result)
 
 
 @bp.get("/game/<int:game_db_id>")

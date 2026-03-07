@@ -26,7 +26,6 @@
     if (!res.ok) return;
     const data = await res.json();
 
-    // Parse PGN into move history
     const chess = new Chess();
     chess.loadPgn(data.pgn);
     const moves = chess.history({ verbose: true });
@@ -47,11 +46,38 @@
 
   function formatDate(d) {
     if (!d) return "";
-    return new Date(d).toLocaleDateString();
+    return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  }
+
+  function initials(name) {
+    if (!name || name === "?") return "?";
+    return name.slice(0, 2).toUpperCase();
+  }
+
+  function resultClass(result) {
+    if (!result) return "draw";
+    const r = result.toLowerCase();
+    if (r === "1-0" || r === "win") return "win";
+    if (r === "0-1" || r === "loss") return "loss";
+    return "draw";
+  }
+
+  function resultLabel(result) {
+    if (!result) return "D";
+    const r = result.toLowerCase();
+    if (r === "1-0" || r === "win") return "W";
+    if (r === "0-1" || r === "loss") return "L";
+    return "D";
   }
 </script>
 
 <div class="game-list">
+  <div class="panel-header">
+    <span class="panel-title">Recent Games</span>
+    {#if $games.length > 0}
+      <span class="game-count">{$games.length}</span>
+    {/if}
+  </div>
   <div class="search">
     <input
       bind:value={username}
@@ -59,7 +85,7 @@
       on:keydown={(e) => e.key === "Enter" && fetchGames()}
     />
     <button on:click={fetchGames} disabled={loading}>
-      {loading ? "..." : "Load"}
+      {loading ? "…" : "Load"}
     </button>
   </div>
 
@@ -69,15 +95,31 @@
 
   <ul>
     {#each $games as game (game.id)}
-      <li
-        class:active={$currentGame?.id === game.id}
-        on:click={() => selectGame(game)}
-      >
-        <span class="result">{game.result}</span>
-        <span class="date">{formatDate(game.played_at)}</span>
-        {#if game.error_count > 0}
-          <span class="errors">{game.error_count}!</span>
-        {/if}
+      {@const rc = resultClass(game.result)}
+      <li class:active={$currentGame?.id === game.id} on:click={() => selectGame(game)}>
+        <div class="game-top">
+          <div class="avatars">
+            <div class="avatar avatar-you" title={username}>{initials(username)}</div>
+            <div class="avatar avatar-opp" title={game.opponent ?? "?"}>{initials(game.opponent ?? "?")}</div>
+          </div>
+          <div class="game-info">
+            <div class="game-vs">
+              <span class="player-name">{username || "You"}</span>
+              <span class="vs">vs</span>
+              <span class="player-name">{game.opponent ?? "?"}</span>
+            </div>
+          </div>
+          <span class="result-chip {rc}">{resultLabel(game.result)}</span>
+        </div>
+        <div class="game-bottom">
+          <span class="game-date">{formatDate(game.played_at)}</span>
+          {#if game.time_control}
+            <span class="time-control">{game.time_control}</span>
+          {/if}
+          {#if game.error_count > 0}
+            <span class="error-badge">⚠ {game.error_count}</span>
+          {/if}
+        </div>
       </li>
     {/each}
   </ul>
@@ -90,30 +132,59 @@
     height: 100%;
     overflow: hidden;
   }
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px 6px;
+    flex-shrink: 0;
+  }
+  .panel-title {
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text-dim);
+  }
+  .game-count {
+    font-size: 11px;
+    color: var(--text-dim);
+    background: var(--surface2);
+    border-radius: 10px;
+    padding: 1px 7px;
+  }
   .search {
     display: flex;
-    gap: 4px;
-    padding: 8px;
+    gap: 6px;
+    padding: 4px 10px 8px;
+    flex-shrink: 0;
   }
   input {
     flex: 1;
-    padding: 6px 8px;
-    background: #16213e;
-    border: 1px solid #0f3460;
-    border-radius: 4px;
-    color: #e0e0e0;
+    padding: 7px 10px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
     font-size: 13px;
+    font-family: var(--font-ui);
+    outline: none;
+    transition: border-color 0.15s;
   }
+  input:focus { border-color: var(--accent); }
+  input::placeholder { color: var(--text-dim); }
   button {
-    padding: 6px 12px;
-    background: #0f3460;
-    border: none;
-    border-radius: 4px;
-    color: #e0e0e0;
+    padding: 7px 12px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
     cursor: pointer;
     font-size: 13px;
+    font-family: var(--font-ui);
+    transition: background 0.15s, color 0.15s;
   }
-  button:hover { background: #1a5276; }
+  button:hover:not(:disabled) { background: var(--border); color: var(--text); }
   button:disabled { opacity: 0.5; cursor: default; }
   ul {
     list-style: none;
@@ -123,25 +194,85 @@
     flex: 1;
   }
   li {
+    padding: 10px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    border-left: 2px solid transparent;
+    transition: background 0.12s;
+  }
+  li:hover { background: var(--surface2); }
+  li.active {
+    background: var(--accent-muted);
+    border-left-color: var(--accent);
+  }
+  .game-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .avatars {
+    display: flex;
+    flex-shrink: 0;
+  }
+  .avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 600;
+    border: 2px solid var(--bg);
+  }
+  .avatar-you {
+    background: #2e4a1c;
+    color: var(--accent);
+    z-index: 1;
+  }
+  .avatar-opp {
+    background: var(--surface2);
+    color: var(--text-muted);
+    margin-left: -8px;
+  }
+  .game-info { flex: 1; min-width: 0; }
+  .game-vs {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+  }
+  .player-name {
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 60px;
+  }
+  .vs { color: var(--text-dim); font-size: 11px; }
+  .result-chip {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .result-chip.win { background: rgba(129,182,76,0.2); color: var(--accent); }
+  .result-chip.loss { background: rgba(192,57,43,0.2); color: #e74c3c; }
+  .result-chip.draw { background: var(--surface2); color: var(--text-dim); }
+  .game-bottom {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 8px 10px;
-    cursor: pointer;
-    border-bottom: 1px solid #0f3460;
-    font-size: 13px;
-  }
-  li:hover { background: #16213e; }
-  li.active { background: #0f3460; }
-  .result { font-weight: bold; color: #a9cce3; min-width: 28px; }
-  .date { flex: 1; color: #888; font-size: 11px; }
-  .errors {
-    background: #c0392b;
-    color: white;
-    border-radius: 10px;
-    padding: 1px 6px;
     font-size: 11px;
-    font-weight: bold;
   }
-  .error { color: #e74c3c; padding: 8px; font-size: 12px; }
+  .game-date { color: var(--text-dim); flex: 1; }
+  .time-control { color: var(--text-dim); }
+  .error-badge { color: #e67e22; font-size: 11px; }
+  .error { color: #e74c3c; padding: 8px 12px; font-size: 12px; margin: 0; }
 </style>

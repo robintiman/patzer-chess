@@ -1,32 +1,18 @@
 <script>
   import { onMount, onDestroy } from "svelte";
   import { Chessground } from "chessground";
-  import { currentFen, currentAnalysis, currentError, history, currentIndex } from "../stores.js";
+  import { currentFen, currentAnalysis, currentError } from "../stores.js";
+
+  export let flipped = false;
 
   let el;
   let cg;
 
-  // Parse FEN to get pieces for chessground
-  function fenToPieces(fen) {
-    const pieces = new Map();
-    const rows = fen.split(" ")[0].split("/");
-    const files = "abcdefgh";
-    rows.forEach((row, rankIdx) => {
-      let fileIdx = 0;
-      for (const ch of row) {
-        if (/\d/.test(ch)) {
-          fileIdx += parseInt(ch);
-        } else {
-          const key = files[fileIdx] + (8 - rankIdx);
-          const color = ch === ch.toUpperCase() ? "white" : "black";
-          const roleMap = { p: "pawn", r: "rook", n: "knight", b: "bishop", q: "queen", k: "king" };
-          pieces.set(key, { role: roleMap[ch.toLowerCase()], color });
-          fileIdx++;
-        }
-      }
-    });
-    return pieces;
-  }
+  const fileLetters = ["a", "b", "c", "d", "e", "f", "g", "h"];
+  const rankNumbers = ["8", "7", "6", "5", "4", "3", "2", "1"];
+
+  $: displayFiles = flipped ? [...fileLetters].reverse() : fileLetters;
+  $: displayRanks = flipped ? [...rankNumbers].reverse() : rankNumbers;
 
   function uciToFromDest(uci) {
     if (!uci || uci.length < 4) return null;
@@ -35,7 +21,6 @@
 
   function updateBoard(fen, analysis, error) {
     if (!cg) return;
-    const pieces = fenToPieces(fen);
     const turnColor = fen.split(" ")[1] === "w" ? "white" : "black";
     const shapes = [];
 
@@ -60,12 +45,17 @@
     });
   }
 
+  $: if (cg) {
+    cg.set({ orientation: flipped ? "black" : "white" });
+  }
+
   onMount(() => {
     cg = Chessground(el, {
       movable: { color: undefined, dests: new Map() },
       draggable: { enabled: false },
       selectable: { enabled: false },
       drawable: { enabled: true, visible: true },
+      orientation: flipped ? "black" : "white",
     });
 
     const unsubscribeFen = currentFen.subscribe((fen) => {
@@ -93,8 +83,23 @@
   });
 </script>
 
-<div class="board-wrap">
-  <div bind:this={el} class="cg-board-wrap"></div>
+<div class="board-with-labels">
+  <div class="labels-row">
+    <div class="corner"></div>
+    {#each displayFiles as f}
+      <div class="file-label">{f}</div>
+    {/each}
+  </div>
+  <div class="board-row-wrap">
+    <div class="rank-labels">
+      {#each displayRanks as r}
+        <div class="rank-label">{r}</div>
+      {/each}
+    </div>
+    <div class="board-wrap">
+      <div bind:this={el} class="cg-board-wrap"></div>
+    </div>
+  </div>
 </div>
 
 <style>
@@ -102,13 +107,73 @@
   @import "chessground/assets/chessground.brown.css";
   @import "chessground/assets/chessground.cburnett.css";
 
+  /* Black pieces: white glow to stand out on dark squares */
+  :global(.cg-wrap piece.black) {
+    filter:
+      drop-shadow(0 0 2px rgba(255,255,255,0.85))
+      drop-shadow(0 0 4px rgba(255,255,255,0.3));
+  }
+
+  /* White pieces: dark glow to stand out on light squares */
+  :global(.cg-wrap piece.white) {
+    filter:
+      drop-shadow(0 0 2px rgba(0,0,0,0.85))
+      drop-shadow(0 0 4px rgba(0,0,0,0.3));
+  }
+
+  /* Override board squares: dark (#1e1e1e) and white (#f0f0f0) checkerboard */
+  :global(cg-board) {
+    background-color: #f0f0f0 !important;
+    background-image: repeating-conic-gradient(#1e1e1e 0% 25%, #f0f0f0 0% 50%) !important;
+    background-size: 25% 25% !important;
+  }
+
+
+  .board-with-labels {
+    display: flex;
+    flex-direction: column;
+  }
+  .labels-row {
+    display: flex;
+    padding-left: 20px;
+  }
+  .corner { width: 0; flex-shrink: 0; }
+  .file-label {
+    width: 72px;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    padding-bottom: 4px;
+    user-select: none;
+  }
+  .board-row-wrap {
+    display: flex;
+    align-items: stretch;
+  }
+  .rank-labels {
+    display: flex;
+    flex-direction: column;
+    width: 20px;
+    flex-shrink: 0;
+  }
+  .rank-label {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    user-select: none;
+  }
   .board-wrap {
     display: flex;
     justify-content: center;
     align-items: center;
   }
   .cg-board-wrap {
-    width: 480px;
-    height: 480px;
+    width: 576px;
+    height: 576px;
   }
 </style>
