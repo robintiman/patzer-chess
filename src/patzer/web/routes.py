@@ -40,11 +40,11 @@ def list_games():
     rows = db.execute(
         """
         SELECT g.id, g.game_id, g.source, g.result, g.time_control, g.played_at,
-               g.pgn_text, COUNT(p.id) AS error_count
+               g.pgn_text, g.analysed, COUNT(p.id) AS error_count
         FROM players pl
         JOIN games g ON g.player_id = pl.id
         LEFT JOIN positions p ON p.game_id = g.id
-        WHERE pl.username = ? AND g.analysed = 1
+        WHERE pl.username = ?
         GROUP BY g.id
         ORDER BY g.played_at DESC
         """,
@@ -94,6 +94,149 @@ def get_game(game_db_id: int):
         "errors": errors,
         "errors_by_fen": errors_by_fen,
     })
+
+
+@bp.post("/sync")
+def sync_games():
+    data = request.get_json(force=True)
+    username = data.get("username", "")
+    max_games = int(data.get("max_games", 20))
+
+    if not username:
+        return jsonify({"error": "username required"}), 400
+
+    db_path: Path = current_app.config["DB_PATH"]
+
+    def generate():
+        import sqlite3
+
+        from ..ingestion.lichess import fetch_games
+        from ..ingestion.parser import parse_pgn
+
+        def send(event_type, **kwargs):
+            return f"data: {json.dumps({'type': event_type, **kwargs})}\n\n"
+
+        db = init_db(db_path)
+        db.row_factory = sqlite3.Row
+
+        try:
+            yield send("status", message="Fetching games from Lichess…")
+            pgn_list = fetch_games(username, max_games)
+
+            db.execute(
+                "INSERT OR IGNORE INTO players (username, source) VALUES (?, ?)",
+                (username, "lichess"),
+            )
+            db.commit()
+            player_id = db.execute(
+                "SELECT id FROM players WHERE username = ?", (username,)
+            ).fetchone()["id"]
+
+            new_games = 0
+            for pgn_text in pgn_list:
+                game = parse_pgn(pgn_text, username, "lichess")
+                if game is None:
+                    continue
+                played_at = (
+                    game.headers.get("UTCDate", "") + " " + game.headers.get("UTCTime", "")
+                ).strip()
+                cur = db.execute(
+                    """INSERT OR IGNORE INTO games
+                       (player_id, game_id, source, result, time_control, played_at, pgn_text, analysed)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 0)""",
+                    (player_id, game.game_id, game.source, game.result,
+                     game.time_control, played_at, game.pgn_text),
+                )
+                db.commit()
+                if cur.rowcount > 0:
+                    new_games += 1
+
+            yield send("done", new_games=new_games, total=len(pgn_list))
+        except Exception as e:
+            yield send("error", message=str(e))
+        finally:
+            db.close()
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@bp.post("/analyse-game/<int:game_db_id>")
+def analyse_game_route(game_db_id: int):
+    db_path: Path = current_app.config["DB_PATH"]
+
+    def generate():
+        import sqlite3
+
+        from ..analysis.engine import analyse_game
+        from ..analysis.strategic import identify_concept
+        from ..ingestion.parser import parse_pgn
+
+        def send(event_type, **kwargs):
+            return f"data: {json.dumps({'type': event_type, **kwargs})}\n\n"
+
+        db = init_db(db_path)
+        db.row_factory = sqlite3.Row
+
+        try:
+            row = db.execute(
+                """SELECT g.pgn_text, pl.username
+                   FROM games g JOIN players pl ON pl.id = g.player_id
+                   WHERE g.id = ?""",
+                (game_db_id,),
+            ).fetchone()
+            if row is None:
+                yield send("error", message="Game not found")
+                return
+
+            game = parse_pgn(row["pgn_text"], row["username"], "lichess")
+            if game is None:
+                yield send("error", message="Could not parse PGN")
+                return
+
+            yield send("status", message="Running Stockfish analysis…")
+            try:
+                errors = analyse_game(game)
+            except Exception as e:
+                yield send("error", message=f"Engine error: {e}")
+                return
+
+            yield send("status", message=f"Found {len(errors)} errors — identifying concepts…")
+
+            db.execute("DELETE FROM positions WHERE game_id = ?", (game_db_id,))
+
+            for err in errors:
+                try:
+                    concept_name, concept_explanation = identify_concept(err, game)
+                except Exception:
+                    concept_name, concept_explanation = "", ""
+
+                db.execute(
+                    """INSERT INTO positions
+                       (game_id, move_number, fen_before, fen_after, player_move, best_move,
+                        eval_drop_cp, pv_san, concept_name, concept_explanation)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (game_db_id, err.move_number, err.fen_before, err.fen_after,
+                     err.player_move, err.best_move, err.eval_drop_cp,
+                     " ".join(err.pv_san), concept_name, concept_explanation),
+                )
+
+            db.execute("UPDATE games SET analysed = 1 WHERE id = ?", (game_db_id,))
+            db.commit()
+            yield send("done", error_count=len(errors))
+        except Exception as e:
+            yield send("error", message=str(e))
+        finally:
+            db.close()
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @bp.post("/analyse")

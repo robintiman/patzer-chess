@@ -10,6 +10,47 @@
 
   let activeTab = "errors";
   let flipped = false;
+  let analysing = false;
+  let analyseStatus = "";
+
+  async function analyseGame() {
+    if (!$currentGame || analysing) return;
+    analysing = true;
+    analyseStatus = "Starting…";
+    try {
+      const res = await fetch(`/api/analyse-game/${$currentGame.id}`, { method: "POST" });
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop();
+        for (const chunk of chunks) {
+          const match = chunk.match(/^data: (.+)$/m);
+          if (!match) continue;
+          const event = JSON.parse(match[1]);
+          if (event.type === "status") analyseStatus = event.message;
+          if (event.type === "error") analyseStatus = `Error: ${event.message}`;
+          if (event.type === "done") {
+            analyseStatus = "";
+            // Refresh current game to get errors
+            const r = await fetch(`/api/game/${$currentGame.id}`);
+            if (r.ok) {
+              const data = await r.json();
+              currentGame.update(g => ({ ...g, ...data, analysed: 1 }));
+            }
+          }
+        }
+      }
+    } catch (e) {
+      analyseStatus = `Error: ${e.message}`;
+    } finally {
+      analysing = false;
+    }
+  }
 
   function navigate(delta) {
     currentIndex.update((i) => {
@@ -64,6 +105,11 @@
         <button on:click={() => navigate(1)} disabled={!canNext} title="Next move">⏩</button>
         <button on:click={() => { currentIndex.set($history.length - 1); currentAnalysis.set(null); }} disabled={!canNext} title="Last move">⏭</button>
         <button on:click={() => (flipped = !flipped)} class="flip-btn" title="Flip board">⇅</button>
+        {#if $currentGame}
+          <button on:click={analyseGame} disabled={analysing} class="analyse-btn" title="Analyse game with Stockfish + Claude">
+            {#if analysing}{analyseStatus || "Analysing…"}{:else}Analyse{/if}
+          </button>
+        {/if}
       </div>
       {#if $currentGame}
         <MoveList />
@@ -191,6 +237,20 @@
   }
   .controls button:disabled { opacity: 0.3; cursor: default; }
   .flip-btn { margin-left: 4px; }
+  .analyse-btn {
+    margin-left: 8px;
+    width: auto !important;
+    padding: 0 12px;
+    background: var(--accent-muted) !important;
+    color: var(--accent) !important;
+    border-color: var(--accent) !important;
+    font-size: 12px !important;
+  }
+  .analyse-btn:hover:not(:disabled) {
+    background: var(--accent) !important;
+    color: #000 !important;
+  }
+  .analyse-btn:disabled { opacity: 0.6 !important; cursor: default; }
   .move-counter { font-size: 12px; color: var(--text-dim); min-width: 52px; text-align: center; }
   .analysis-col {
     border-left: 1px solid var(--border);

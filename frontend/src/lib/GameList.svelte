@@ -5,21 +5,53 @@
 
   const username = "jumpyfile";
   let loading = false;
+  let syncStatus = "";
   let error = "";
 
-  onMount(() => fetchGames());
+  onMount(() => syncAndFetch());
+
+  async function syncAndFetch() {
+    loading = true;
+    syncStatus = "Connecting…";
+    error = "";
+    try {
+      const res = await fetch("/api/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, max_games: 20 }),
+      });
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop();
+        for (const chunk of chunks) {
+          const match = chunk.match(/^data: (.+)$/m);
+          if (!match) continue;
+          const event = JSON.parse(match[1]);
+          if (event.type === "status") syncStatus = event.message;
+          if (event.type === "error") error = event.message;
+          if (event.type === "done") syncStatus = "";
+        }
+      }
+    } catch (e) {
+      error = e.message;
+    }
+    await fetchGames();
+    loading = false;
+  }
 
   async function fetchGames() {
-    loading = true;
-    error = "";
     try {
       const res = await fetch(`/api/games?username=${encodeURIComponent(username)}`);
       if (!res.ok) throw new Error("Failed to fetch games");
       games.set(await res.json());
     } catch (e) {
       error = e.message;
-    } finally {
-      loading = false;
     }
   }
 
@@ -81,7 +113,7 @@
     {/if}
   </div>
   {#if loading}
-    <div class="loading-hint">Loading games…</div>
+    <div class="loading-hint">{syncStatus || "Loading…"}</div>
   {/if}
 
   {#if error}
@@ -91,30 +123,32 @@
   <ul>
     {#each $games as game (game.id)}
       {@const rc = resultClass(game.result)}
-      <li class:active={$currentGame?.id === game.id} on:click={() => selectGame(game)}>
-        <div class="game-top">
-          <div class="avatars">
-            <div class="avatar avatar-you" title={username}>{initials(username)}</div>
-            <div class="avatar avatar-opp" title={game.opponent ?? "?"}>{initials(game.opponent ?? "?")}</div>
-          </div>
-          <div class="game-info">
-            <div class="game-vs">
-              <span class="player-name">{username || "You"}</span>
-              <span class="vs">vs</span>
-              <span class="player-name">{game.opponent ?? "?"}</span>
+      <li>
+        <button class="game-item" class:active={$currentGame?.id === game.id} on:click={() => selectGame(game)}>
+          <div class="game-top">
+            <div class="avatars">
+              <div class="avatar avatar-you" title={username}>{initials(username)}</div>
+              <div class="avatar avatar-opp" title={game.opponent ?? "?"}>{initials(game.opponent ?? "?")}</div>
             </div>
+            <div class="game-info">
+              <div class="game-vs">
+                <span class="player-name">{username || "You"}</span>
+                <span class="vs">vs</span>
+                <span class="player-name">{game.opponent ?? "?"}</span>
+              </div>
+            </div>
+            <span class="result-chip {rc}">{resultLabel(game.result)}</span>
           </div>
-          <span class="result-chip {rc}">{resultLabel(game.result)}</span>
-        </div>
-        <div class="game-bottom">
-          <span class="game-date">{formatDate(game.played_at)}</span>
-          {#if game.time_control}
-            <span class="time-control">{game.time_control}</span>
-          {/if}
-          {#if game.error_count > 0}
-            <span class="error-badge">⚠ {game.error_count}</span>
-          {/if}
-        </div>
+          <div class="game-bottom">
+            <span class="game-date">{formatDate(game.played_at)}</span>
+            {#if game.time_control}
+              <span class="time-control">{game.time_control}</span>
+            {/if}
+            {#if game.error_count > 0}
+              <span class="error-badge">⚠ {game.error_count}</span>
+            {/if}
+          </div>
+        </button>
       </li>
     {/each}
   </ul>
@@ -162,14 +196,24 @@
     flex: 1;
   }
   li {
-    padding: 10px 12px;
-    cursor: pointer;
+    list-style: none;
+  }
+  .game-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
     border-bottom: 1px solid var(--border);
     border-left: 2px solid transparent;
+    padding: 10px 12px;
+    cursor: pointer;
+    color: inherit;
+    font: inherit;
     transition: background 0.12s;
   }
-  li:hover { background: var(--surface2); }
-  li.active {
+  .game-item:hover { background: var(--surface2); }
+  .game-item.active {
     background: var(--accent-muted);
     border-left-color: var(--accent);
   }
