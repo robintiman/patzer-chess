@@ -12,11 +12,13 @@
   let flipped = false;
   let analysing = false;
   let analyseStatus = "";
+  let analyseProgress = 0;
 
   async function analyseGame() {
     if (!$currentGame || analysing) return;
     analysing = true;
-    analyseStatus = "Starting…";
+    analyseProgress = 5;
+    analyseStatus = "Preparing position…";
     try {
       const res = await fetch(`/api/analyse-game/${$currentGame.id}`, { method: "POST" });
       const reader = res.body.getReader();
@@ -32,16 +34,27 @@
           const match = chunk.match(/^data: (.+)$/m);
           if (!match) continue;
           const event = JSON.parse(match[1]);
-          if (event.type === "status") analyseStatus = event.message;
+          if (event.type === "status") {
+            analyseStatus = event.message;
+            if (event.message.toLowerCase().includes("stockfish")) {
+              analyseProgress = 20;
+            } else if (event.message.toLowerCase().includes("concepts")) {
+              analyseProgress = 62;
+            }
+          }
           if (event.type === "error") analyseStatus = `Error: ${event.message}`;
           if (event.type === "done") {
-            analyseStatus = "";
+            analyseProgress = 100;
+            analyseStatus = "Analysis complete";
             // Refresh current game to get errors
             const r = await fetch(`/api/game/${$currentGame.id}`);
             if (r.ok) {
               const data = await r.json();
               currentGame.update(g => ({ ...g, ...data, analysed: 1 }));
             }
+            await new Promise(r => setTimeout(r, 800));
+            analyseStatus = "";
+            analyseProgress = 0;
           }
         }
       }
@@ -105,12 +118,34 @@
         <button on:click={() => navigate(1)} disabled={!canNext} title="Next move">⏩</button>
         <button on:click={() => { currentIndex.set($history.length - 1); currentAnalysis.set(null); }} disabled={!canNext} title="Last move">⏭</button>
         <button on:click={() => (flipped = !flipped)} class="flip-btn" title="Flip board">⇅</button>
-        {#if $currentGame}
-          <button on:click={analyseGame} disabled={analysing} class="analyse-btn" title="Analyse game with Stockfish + Claude">
-            {#if analysing}{analyseStatus || "Analysing…"}{:else}Analyse{/if}
-          </button>
-        {/if}
       </div>
+      {#if $currentGame}
+        <div class="analyse-section">
+          {#if analysing}
+            <div class="analyse-progress">
+              <div class="progress-header">
+                <span class="progress-piece">♞</span>
+                <span class="progress-status">{analyseStatus || "Analysing…"}</span>
+              </div>
+              <div class="chess-bar">
+                {#each Array(8) as _, i}
+                  {@const threshold = (i + 1) * 12.5}
+                  {@const filled = analyseProgress >= threshold}
+                  {@const active = analyseProgress >= i * 12.5 && !filled}
+                  <div class="chess-sq {i % 2 === 0 ? 'sq-light' : 'sq-dark'}"
+                       class:filled
+                       class:active></div>
+                {/each}
+              </div>
+            </div>
+          {:else}
+            <button on:click={analyseGame} class="analyse-btn" title="Analyse game with Stockfish + Claude">
+              <span class="btn-piece">♞</span>
+              <span>Analyse game</span>
+            </button>
+          {/if}
+        </div>
+      {/if}
       {#if $currentGame}
         <MoveList />
       {/if}
@@ -237,20 +272,83 @@
   }
   .controls button:disabled { opacity: 0.3; cursor: default; }
   .flip-btn { margin-left: 4px; }
+  .analyse-section {
+    width: 100%;
+    max-width: 480px;
+  }
   .analyse-btn {
-    margin-left: 8px;
-    width: auto !important;
-    padding: 0 12px;
-    background: var(--accent-muted) !important;
-    color: var(--accent) !important;
-    border-color: var(--accent) !important;
-    font-size: 13px !important;
+    width: 100%;
+    height: 44px;
+    background: var(--accent-muted);
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    font-size: 15px;
+    font-weight: 600;
+    font-family: var(--font-ui);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    letter-spacing: 0.3px;
+    transition: background 0.15s, color 0.15s, box-shadow 0.15s;
   }
-  .analyse-btn:hover:not(:disabled) {
-    background: var(--accent) !important;
-    color: #000 !important;
+  .analyse-btn:hover {
+    background: var(--accent);
+    color: #000;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
   }
-  .analyse-btn:disabled { opacity: 0.6 !important; cursor: default; }
+  .btn-piece {
+    font-size: 20px;
+    line-height: 1;
+  }
+  .analyse-progress {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .progress-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .progress-piece {
+    font-size: 18px;
+    line-height: 1;
+    animation: piece-bob 1s ease-in-out infinite;
+  }
+  @keyframes piece-bob {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-3px); }
+  }
+  .progress-status {
+    font-size: 13px;
+    color: var(--text-muted);
+    font-style: italic;
+  }
+  .chess-bar {
+    display: flex;
+    height: 16px;
+    border-radius: 3px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .chess-sq {
+    flex: 1;
+    transition: background 0.35s ease;
+  }
+  .chess-sq.sq-light { background: #2a2a2a; }
+  .chess-sq.sq-dark  { background: #222; }
+  .chess-sq.sq-light.filled { background: #81b64c; }
+  .chess-sq.sq-dark.filled  { background: #6a9e3c; }
+  .chess-sq.sq-light.active { background: #4a6e2a; animation: pulse-sq 0.8s ease-in-out infinite; }
+  .chess-sq.sq-dark.active  { background: #3d5c23; animation: pulse-sq 0.8s ease-in-out infinite; }
+  @keyframes pulse-sq {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
   .move-counter { font-size: 13px; color: var(--text-dim); min-width: 52px; text-align: center; }
   .analysis-col {
     border-left: 1px solid var(--border);
