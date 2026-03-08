@@ -169,14 +169,14 @@
     flex-shrink: 0;
   }
   .panel-title {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
     text-transform: uppercase;
     letter-spacing: 0.6px;
     color: var(--text-dim);
   }
   .game-count {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
     background: var(--surface2);
     border-radius: 10px;
@@ -184,7 +184,7 @@
   }
   .loading-hint {
     padding: 4px 12px 8px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-dim);
     flex-shrink: 0;
   }
@@ -234,7 +234,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     border: 2px solid var(--bg);
   }
@@ -253,7 +253,7 @@
     display: flex;
     align-items: center;
     gap: 5px;
-    font-size: 12px;
+    font-size: 13px;
   }
   .player-name {
     color: var(--text-muted);
@@ -262,7 +262,7 @@
     text-overflow: ellipsis;
     max-width: 60px;
   }
-  .vs { color: var(--text-dim); font-size: 11px; }
+  .vs { color: var(--text-dim); font-size: 12px; }
   .result-chip {
     flex-shrink: 0;
     width: 22px;
@@ -271,7 +271,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 700;
   }
   .result-chip.win { background: rgba(129,182,76,0.2); color: var(--accent); }
@@ -281,10 +281,10 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 11px;
+    font-size: 12px;
   }
   .game-date { color: var(--text-dim); flex: 1; }
   .time-control { color: var(--text-dim); }
-  .error-badge { color: #e67e22; font-size: 11px; }
-  .error { color: #e74c3c; padding: 8px 12px; font-size: 12px; margin: 0; }
+  .error-badge { color: #e67e22; font-size: 12px; }
+  .error { color: #e74c3c; padding: 8px 12px; font-size: 13px; margin: 0; }
 </style>

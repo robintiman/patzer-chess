@@ -56,10 +56,10 @@
     gap: 2px;
     padding: 6px 8px;
     font-family: var(--font-mono);
-    font-size: 13px;
+    font-size: 14px;
     background: var(--surface);
     border-radius: var(--radius-sm);
-    width: 576px;
+    width: 640px;
   }
   .move-number {
     color: var(--text-dim);

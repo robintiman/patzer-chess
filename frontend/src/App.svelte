@@ -173,7 +173,7 @@
     border-radius: var(--radius-sm);
     color: var(--text-muted);
     text-decoration: none;
-    font-size: 13px;
+    font-size: 14px;
     transition: color 0.15s;
   }
   .nav-link:hover,
@@ -186,7 +186,7 @@
   }
   main {
     display: grid;
-    grid-template-columns: 240px 1fr 300px;
+    grid-template-columns: 240px 1fr 380px;
     flex: 1;
     min-height: 0;
     overflow: hidden;
@@ -225,7 +225,7 @@
     border-radius: var(--radius-sm);
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 13px;
+    font-size: 14px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -244,14 +244,14 @@
     background: var(--accent-muted) !important;
     color: var(--accent) !important;
     border-color: var(--accent) !important;
-    font-size: 12px !important;
+    font-size: 13px !important;
   }
   .analyse-btn:hover:not(:disabled) {
     background: var(--accent) !important;
     color: #000 !important;
   }
   .analyse-btn:disabled { opacity: 0.6 !important; cursor: default; }
-  .move-counter { font-size: 12px; color: var(--text-dim); min-width: 52px; text-align: center; }
+  .move-counter { font-size: 13px; color: var(--text-dim); min-width: 52px; text-align: center; }
   .analysis-col {
     border-left: 1px solid var(--border);
     display: flex;
@@ -271,7 +271,7 @@
     border-bottom: 2px solid transparent;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 13px;
+    font-size: 14px;
     font-family: var(--font-ui);
     display: flex;
     align-items: center;
@@ -290,7 +290,7 @@
     color: #000;
     border-radius: 10px;
     padding: 1px 6px;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
   }
   .tab-content {

@@ -139,10 +139,10 @@
   }
   .corner { width: 0; flex-shrink: 0; }
   .file-label {
-    width: 72px;
+    width: 80px;
     text-align: center;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
     padding-bottom: 4px;
     user-select: none;
@@ -163,7 +163,7 @@
     align-items: center;
     justify-content: center;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
     user-select: none;
   }
@@ -173,7 +173,7 @@
     align-items: center;
   }
   .cg-board-wrap {
-    width: 576px;
-    height: 576px;
+    width: 640px;
+    height: 640px;
   }
 </style>

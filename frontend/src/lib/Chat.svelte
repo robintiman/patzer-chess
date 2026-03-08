@@ -131,7 +131,7 @@
     border: 1px solid var(--border);
     border-radius: 12px;
     padding: 3px 10px;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
     align-self: center;
     font-family: var(--font-mono);
@@ -162,7 +162,7 @@
   .bubble {
     padding: 8px 12px;
     border-radius: 12px;
-    font-size: 13px;
+    font-size: 14px;
     line-height: 1.5;
   }
   .bubble-wrap.user .bubble {
@@ -178,7 +178,7 @@
   }
   .bubble p { margin: 0; white-space: pre-wrap; }
   .ts {
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-dim);
     padding: 0 4px;
   }
@@ -219,7 +219,7 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     color: var(--text);
-    font-size: 13px;
+    font-size: 14px;
     resize: none;
     font-family: var(--font-ui);
     outline: none;

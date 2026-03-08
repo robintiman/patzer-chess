@@ -82,7 +82,7 @@
     border-radius: var(--radius-sm);
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 13px;
+    font-size: 14px;
     font-family: var(--font-ui);
     width: 100%;
     transition: background 0.15s, color 0.15s, border-color 0.15s;
@@ -114,7 +114,7 @@
     border-radius: var(--radius-sm);
     padding: 3px 8px;
     font-family: var(--font-mono);
-    font-size: 13px;
+    font-size: 14px;
     color: var(--text);
   }
   .eval-drop-chip {
@@ -123,13 +123,13 @@
     color: #e74c3c;
     border-radius: var(--radius-sm);
     padding: 3px 8px;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
     font-family: var(--font-mono);
   }
   .description {
     margin: 0;
-    font-size: 13px;
+    font-size: 14px;
     color: var(--text-muted);
     line-height: 1.55;
   }
@@ -144,7 +144,7 @@
     border: 1px solid rgba(129,182,76,0.3);
     border-radius: var(--radius-sm);
     padding: 2px 8px;
-    font-size: 11px;
+    font-size: 12px;
   }
   .best-move-row {
     display: flex;
@@ -152,19 +152,19 @@
     gap: 8px;
   }
   .best-label {
-    font-size: 11px;
+    font-size: 12px;
     text-transform: uppercase;
     color: var(--text-dim);
     letter-spacing: 0.5px;
   }
   .best-value {
     font-family: var(--font-mono);
-    font-size: 13px;
+    font-size: 14px;
     color: var(--text);
   }
   .pv-line {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
     white-space: nowrap;
     overflow: hidden;
@@ -176,7 +176,7 @@
     align-items: center;
     justify-content: center;
     color: var(--text-dim);
-    font-size: 13px;
+    font-size: 14px;
     padding: 20px;
     text-align: center;
   }

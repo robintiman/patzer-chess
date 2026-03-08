@@ -34,7 +34,7 @@
     flex-direction: column;
     align-items: center;
     gap: 4px;
-    height: 576px;
+    height: 640px;
   }
   .bar {
     width: 9px;
@@ -54,7 +54,7 @@
   }
   .eval-top,
   .eval-bot {
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-dim);
     font-family: var(--font-mono);
     min-height: 14px;
