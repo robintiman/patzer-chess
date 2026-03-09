@@ -212,7 +212,10 @@ def analyse_game_route(game_db_id: int):
             for err in errors:
                 try:
                     concept_name, concept_explanation = identify_concept(err, game)
-                except Exception:
+                except Exception as e:
+                    import traceback
+                    print(f"[identify_concept] error at move {err.move_number}: {e}")
+                    traceback.print_exc()
                     concept_name, concept_explanation = "", ""
 
                 db.execute(

@@ -1,11 +1,11 @@
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import chess
 import chess.engine
 import chess.pgn
 
-from ..config import BLUNDER_THRESHOLD_CP, STOCKFISH_DEPTH, STOCKFISH_PATH
+from ..config import BLUNDER_THRESHOLD_CP, MULTI_PV_COUNT, STOCKFISH_DEPTH, STOCKFISH_PATH
 from ..ingestion.parser import Game
 
 OPENING_MOVES_SKIP = 5
@@ -20,7 +20,8 @@ class ErrorPosition:
     player_move: str  # UCI
     best_move: str    # UCI
     eval_drop_cp: int
-    pv_san: list[str]  # Best line in SAN notation (from position before player's move)
+    pv_san: list[str]       # Best line in SAN notation (from position before player's move)
+    alt_pvs_san: list[list[str]] = field(default_factory=list)  # 2nd and 3rd best lines
 
 
 def analyse_game(game: Game, depth: int = STOCKFISH_DEPTH) -> list[ErrorPosition]:
@@ -53,7 +54,8 @@ def analyse_game(game: Game, depth: int = STOCKFISH_DEPTH) -> list[ErrorPosition
 
             fen_before = board.fen()
 
-            info_before = engine.analyse(board, chess.engine.Limit(depth=depth))
+            results = engine.analyse(board, chess.engine.Limit(depth=depth), multipv=MULTI_PV_COUNT)
+            info_before = results[0]
             score_before = _score_from_player_pov(info_before["score"], player_is_white)
             best_move_obj = info_before.get("pv", [None])[0]
 
@@ -65,6 +67,18 @@ def analyse_game(game: Game, depth: int = STOCKFISH_DEPTH) -> list[ErrorPosition
                     temp_board.push(pv_move)
                 except Exception:
                     break
+
+            alt_pvs_san: list[list[str]] = []
+            for alt_info in results[1:]:
+                alt_pv: list[str] = []
+                temp_board = board.copy()
+                for pv_move in alt_info.get("pv", [])[:8]:
+                    try:
+                        alt_pv.append(temp_board.san(pv_move))
+                        temp_board.push(pv_move)
+                    except Exception:
+                        break
+                alt_pvs_san.append(alt_pv)
 
             board.push(move)
             fen_after = board.fen()
@@ -89,6 +103,7 @@ def analyse_game(game: Game, depth: int = STOCKFISH_DEPTH) -> list[ErrorPosition
                         best_move=best_move_uci,
                         eval_drop_cp=drop,
                         pv_san=pv_san,
+                        alt_pvs_san=alt_pvs_san,
                     ))
 
     return errors
