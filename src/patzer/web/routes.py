@@ -226,7 +226,7 @@ def analyse_game_route(game_db_id: int):
                     traceback.print_exc()
                     return err, ("", "")
 
-            with ThreadPoolExecutor(max_workers=10) as pool:
+            with ThreadPoolExecutor(max_workers=3) as pool:
                 future_to_err = {pool.submit(call_concept, err): err for err in errors}
                 for future in as_completed(future_to_err):
                     err, (concept_name, concept_explanation) = future.result()

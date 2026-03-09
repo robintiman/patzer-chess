@@ -61,6 +61,7 @@
       {#if pvLine}
         <div class="pv-line">{pvLine}</div>
       {/if}
+
     </div>
   {:else}
     <div class="empty-state">No error at this position</div>
