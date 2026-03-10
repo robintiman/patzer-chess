@@ -33,7 +33,10 @@ CREATE TABLE IF NOT EXISTS positions (
     player_move TEXT NOT NULL,
     best_move TEXT NOT NULL,
     eval_drop_cp INTEGER NOT NULL,
+    win_pct_drop REAL NOT NULL DEFAULT 0,
+    move_classification TEXT NOT NULL DEFAULT 'blunder',
     pv_san TEXT NOT NULL DEFAULT '',
+    alt_pvs_san TEXT NOT NULL DEFAULT '',
     concept_name TEXT NOT NULL DEFAULT '',
     concept_explanation TEXT NOT NULL DEFAULT ''
 );
@@ -88,5 +91,4 @@ def get_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
 def init_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
     conn = get_db(db_path)
     conn.executescript(DDL)
-    conn.commit()
     return conn

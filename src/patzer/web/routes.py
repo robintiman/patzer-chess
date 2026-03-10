@@ -78,7 +78,8 @@ def get_game(game_db_id: int):
     error_rows = db.execute(
         """
         SELECT fen_before, fen_after, player_move, best_move, eval_drop_cp,
-               pv_san, concept_name, concept_explanation, move_number
+               win_pct_drop, move_classification, pv_san, alt_pvs_san,
+               concept_name, concept_explanation, move_number
         FROM positions
         WHERE game_id = ?
         ORDER BY move_number
@@ -233,11 +234,14 @@ def analyse_game_route(game_db_id: int):
                     db.execute(
                         """INSERT INTO positions
                            (game_id, move_number, fen_before, fen_after, player_move, best_move,
-                            eval_drop_cp, pv_san, concept_name, concept_explanation)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            eval_drop_cp, win_pct_drop, move_classification,
+                            pv_san, alt_pvs_san, concept_name, concept_explanation)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (game_db_id, err.move_number, err.fen_before, err.fen_after,
                          err.player_move, err.best_move, err.eval_drop_cp,
-                         " ".join(err.pv_san), concept_name, concept_explanation),
+                         err.win_pct_drop, err.move_classification,
+                         " ".join(err.pv_san), json.dumps(err.alt_pvs_san),
+                         concept_name, concept_explanation),
                     )
                     yield send("concept_identified",
                                move_number=err.move_number,
@@ -245,6 +249,8 @@ def analyse_game_route(game_db_id: int):
                                player_move=err.player_move,
                                fen_before=err.fen_before,
                                eval_drop_cp=err.eval_drop_cp,
+                               win_pct_drop=err.win_pct_drop,
+                               move_classification=err.move_classification,
                                concept_name=concept_name)
 
             db.execute("UPDATE games SET analysed = 1 WHERE id = ?", (game_db_id,))

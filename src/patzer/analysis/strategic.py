@@ -15,13 +15,18 @@ CONCEPTS_FILE = Path(__file__).parent.parent.parent.parent / "chess_concepts.md"
 def identify_concept(error_pos: ErrorPosition, game: Game) -> tuple[str, str]:
     """Ask Claude to identify the chess concept missed in this position.
 
-    Claude can interactively query Stockfish to verify hypotheses before naming a concept.
-    Returns (concept_name, explanation). Both are empty strings if nothing notable
-    is found or if the API call fails.
+    Claude can interactively query Stockfish to verify hypotheses before naming
+    a concept. Returns (concept_name, explanation). Both are empty strings if
+    nothing notable is found or if the API call fails.
     """
     if not ANTHROPIC_API_KEY:
         raise RuntimeError("ANTHROPIC_API_KEY is not set")
 
+    return _identify_concept_claude(error_pos, game)
+
+
+def _identify_concept_claude(error_pos: ErrorPosition, game: Game) -> tuple[str, str]:
+    """Run the Claude tool-use loop to identify the chess concept."""
     board = chess.Board(error_pos.fen_before)
     try:
         player_san = board.san(chess.Move.from_uci(error_pos.player_move))
@@ -48,7 +53,8 @@ Use the following chess concepts reference when naming concepts:
 Position details:
   Move {move_num} — {user_side} played: {player_san}
   FEN: {error_pos.fen_before}
-  Evaluation drop: {error_pos.eval_drop_cp} centipawns
+  Evaluation drop: {error_pos.eval_drop_cp} centipawns ({error_pos.win_pct_drop:.1f}% winning chances lost)
+  Classification: {error_pos.move_classification}
 
 Stockfish best line: {pv_str}
 Alternative lines considered:
