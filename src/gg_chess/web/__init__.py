@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from flask import Flask
+from flask import Flask, send_from_directory
 
-from ..db import init_db, migrate_v2
+from ..db import init_db
 
 
 def create_app(db_path: Path | None = None) -> Flask:
@@ -23,7 +23,6 @@ def create_app(db_path: Path | None = None) -> Flask:
 
     @app.route("/")
     def index():
-        from flask import send_from_directory
         return send_from_directory(str(dist_dir), "index.html")
 
     return app

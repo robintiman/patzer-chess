@@ -23,6 +23,7 @@ from ..ingestion.parser import Game
 
 MAX_ERRORS_PER_GAME = 50
 _ANALYSIS_WORKERS = 3
+_SWEEP_WORKERS = 4
 
 
 @dataclass
@@ -250,3 +251,47 @@ def analyse_game(game: Game):
     errors.sort(key=lambda e: e.move_number)
     errors = errors[:MAX_ERRORS_PER_GAME]
     yield {"type": "done", "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# Full-game eval sweep
+# ---------------------------------------------------------------------------
+
+def _eval_position_task(task: dict) -> dict:
+    with chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH) as engine:
+        engine.configure({"Threads": STOCKFISH_THREADS, "Hash": STOCKFISH_HASH})
+        board = chess.Board(task["fen"])
+        info = engine.analyse(board, chess.engine.Limit(nodes=STOCKFISH_NODES_SCAN))
+        eval_cp = info["score"].white().score(mate_score=1000) or 0
+    return {"half_move_index": task["half_move_index"], "eval_cp": eval_cp}
+
+
+def sweep_game_evals(game: Game) -> list[dict]:
+    """Return {half_move_index, eval_cp} for every ply (eval from white's POV).
+
+    half_move_index is 1-based and matches the ply index used by the frontend.
+    """
+    pgn_game = chess.pgn.read_game(io.StringIO(game.pgn_text))
+    if pgn_game is None:
+        return []
+
+    tasks: list[dict] = []
+    board = pgn_game.board()
+    half_move_index = 0
+
+    for node in pgn_game.mainline():
+        half_move_index += 1
+        board.push(node.move)
+        tasks.append({"half_move_index": half_move_index, "fen": board.fen()})
+
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=_SWEEP_WORKERS) as pool:
+        futures = {pool.submit(_eval_position_task, t): t for t in tasks}
+        for future in as_completed(futures):
+            try:
+                results.append(future.result())
+            except Exception as e:
+                print(f"[sweep_game_evals] worker error: {e}")
+
+    results.sort(key=lambda r: r["half_move_index"])
+    return results

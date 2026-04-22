@@ -99,7 +99,7 @@ export function flattenPlies(game) {
   return plies;
 }
 
-export function transformGameResponse({ pgn, errors }, username) {
+export function transformGameResponse({ pgn, errors, move_evals, analysed }, username) {
   const headers = parsePgnHeaders(pgn);
   const moveList = parsePgnMoves(pgn);
 
@@ -114,14 +114,21 @@ export function transformGameResponse({ pgn, errors }, username) {
     errorMap[`${e.move_number}-${colorChar}`] = e;
   }
 
+  // half_move_index is 1-based and matches idx+1 in the move list
+  const evalByHalfMove = {};
+  for (const ev of move_evals || []) {
+    evalByHalfMove[ev.half_move_index] = ev.eval_cp;
+  }
+
   const movePairs = [];
   for (let idx = 0; idx < moveList.length; idx++) {
     const moveNo = Math.floor(idx / 2) + 1;
     const color = idx % 2 === 0 ? "w" : "b";
     const { san, clock } = moveList[idx];
     const err = errorMap[`${moveNo}-${color}`];
+    const halfMoveIdx = idx + 1;
 
-    let moveData = { san, class: err?.move_classification || "ok", clock };
+    let moveData = { san, class: err?.move_classification || "ok", clock, eval: evalByHalfMove[halfMoveIdx] ?? 0 };
 
     if (err) {
       const pv = err.pv_san ? err.pv_san.split(" ").filter(Boolean) : [];
@@ -160,6 +167,7 @@ export function transformGameResponse({ pgn, errors }, username) {
 
   return {
     dbId: null,
+    analysed: !!analysed,
     you: isWhite ? white : black,
     opponent: isWhite ? black : white,
     youRating: isWhite ? (headers.WhiteElo || "?") : (headers.BlackElo || "?"),

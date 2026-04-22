@@ -23,6 +23,9 @@ export default function App() {
   const [activeGameId, setActiveGameId] = useState(null);
   const [gameDetail, setGameDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [analysing, setAnalysing] = useState(false);
+  const [analysisStatus, setAnalysisStatus] = useState("");
 
   const [currentPly, setCurrentPly] = useState(0);
   const [flipped, setFlipped] = useState(false);
@@ -62,18 +65,89 @@ export default function App() {
     setGameDetail(null);
   }
 
-  // Fetch games list when username is set
-  useEffect(() => {
-    if (!username) return;
-    fetch(`/api/interesting-games?username=${encodeURIComponent(username)}`)
+  function syncAndLoadGames() {
+    if (!username || syncing) return;
+    setSyncing(true);
+    setGames(null);
+    fetch("/api/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username }),
+    })
+      .then((r) => {
+        const reader = r.body.getReader();
+        const drain = () => reader.read().then(({ done }) => { if (!done) drain(); });
+        return drain();
+      })
+      .then(() => fetch(`/api/games?username=${encodeURIComponent(username)}`))
       .then((r) => r.json())
       .then((data) => {
         const transformed = transformGameList(data, username);
         setGames(transformed);
         if (transformed.length > 0) setActiveGameId(transformed[0].id);
       })
-      .catch(() => setGames([]));
-  }, [username]);
+      .catch(() => setGames([]))
+      .finally(() => setSyncing(false));
+  }
+
+  function startAnalysis() {
+    if (!activeGameId || analysing) return;
+    setAnalysing(true);
+    setAnalysisStatus("Starting analysis…");
+
+    fetch(`/api/analyse-game/${activeGameId}`, { method: "POST" })
+      .then((r) => {
+        const reader = r.body.getReader();
+        const dec = new TextDecoder();
+        function pump() {
+          return reader.read().then(({ done, value }) => {
+            if (done) return;
+            const text = dec.decode(value, { stream: true });
+            for (const line of text.split("\n")) {
+              if (!line.startsWith("data: ")) continue;
+              try {
+                const ev = JSON.parse(line.slice(6));
+                if (ev.type === "status") setAnalysisStatus(ev.message);
+                if (ev.type === "analyzing_move") setAnalysisStatus(`Analysing ${ev.san}…`);
+                if (ev.type === "concept_identified") setAnalysisStatus(`Found ${ev.move_classification} on move ${ev.move_number}`);
+                if (ev.type === "done") setAnalysisStatus(`Done — ${ev.error_count} errors found`);
+                if (ev.type === "error") setAnalysisStatus(`Error: ${ev.message}`);
+              } catch (_) {}
+            }
+            return pump();
+          });
+        }
+        return pump();
+      })
+      .then(() => {
+        // Reload game detail to get errors + eval graph
+        setAnalysing(false);
+        setDetailLoading(true);
+        setGameDetail(null);
+        return fetch(`/api/game/${activeGameId}`)
+          .then((r) => r.json())
+          .then((data) => {
+            const g = transformGameResponse(data, username);
+            g.dbId = activeGameId;
+            const p = flattenPlies(g);
+            const cp = p.map((x, i) => (x.isCritical ? i : -1)).filter((i) => i >= 0);
+            setGameDetail({ game: g, plies: p, criticalPlies: cp });
+            setCurrentPly(0);
+            setAnnotations({});
+            setDetailLoading(false);
+          });
+      })
+      .catch((err) => {
+        setAnalysisStatus(`Error: ${err.message}`);
+        setAnalysing(false);
+      });
+  }
+
+  // Sync on username set
+  useEffect(() => {
+    if (!username) return;
+    syncAndLoadGames();
+  }, [username]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch game detail when active game changes
   useEffect(() => {
@@ -204,7 +278,7 @@ export default function App() {
       <div className="app-body" data-layout={tweaks.coachPosition}>
         <aside className="col-games">
           <GameList games={games || []} activeId={activeGameId} onSelect={setActiveGameId}
-            username={username} gamesLoading={games === null} />
+            username={username} gamesLoading={games === null} onSync={syncAndLoadGames} syncing={syncing} />
           <PatternInsights />
         </aside>
 
@@ -218,8 +292,12 @@ export default function App() {
             <>
               <div className="ws-top">
                 <GameTitleBar game={game} />
-                <EvalGraph plies={plies} currentPly={currentPly} onSeek={seek}
-                  criticalPlies={blindMode ? [] : criticalPlies} />
+                {!game.analysed || analysing ? (
+                  <AnalysisBanner analysing={analysing} status={analysisStatus} onStart={startAnalysis} />
+                ) : (
+                  <EvalGraph plies={plies} currentPly={currentPly} onSeek={seek}
+                    criticalPlies={blindMode ? [] : criticalPlies} />
+                )}
               </div>
 
               <div className="ws-main" data-stack={stackMoves}>
@@ -508,6 +586,32 @@ function BoardFooter({ plyInfo, currentPly, total, onSeek, setFlipped, flipped }
         .bf-clock { font-size: 11px; color: var(--text-dim); margin-left: auto; }
         .bf-flip { width: 30px; height: 28px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.12s; }
         .bf-flip:hover { color: var(--text); background: var(--surface-2); }
+      `}</style>
+    </div>
+  );
+}
+
+function AnalysisBanner({ analysing, status, onStart }) {
+  return (
+    <div className="ab">
+      {analysing ? (
+        <>
+          <div className="ab-spinner" />
+          <span className="ab-status">{status || "Analysing…"}</span>
+        </>
+      ) : (
+        <>
+          <span className="ab-hint">Run Stockfish analysis to see the eval graph and find errors.</span>
+          <button className="ab-btn" onClick={onStart}>Analyse game</button>
+        </>
+      )}
+      <style>{`
+        .ab { display: flex; align-items: center; gap: 12px; height: 40px; padding: 0 4px; }
+        .ab-spinner { width: 14px; height: 14px; border: 2px solid var(--border-2); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0; }
+        .ab-status { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ab-hint { font-size: 12px; color: var(--text-dim); font-family: var(--font-serif); font-style: italic; flex: 1; }
+        .ab-btn { padding: 6px 14px; background: var(--accent); color: #0b0c0d; border: none; border-radius: var(--radius-sm); font-size: 12px; font-weight: 600; cursor: pointer; transition: filter 0.12s; flex-shrink: 0; }
+        .ab-btn:hover { filter: brightness(1.08); }
       `}</style>
     </div>
   );

@@ -3,7 +3,7 @@ import time
 
 import httpx
 
-USER_AGENT = "Patzer/0.1 (chess improvement tool; contact via github)"
+USER_AGENT = "gg-chess/0.1"
 
 
 def fetch_games(username: str, max_games: int = 50) -> list[str]:

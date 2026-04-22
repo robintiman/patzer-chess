@@ -65,6 +65,7 @@ def list_games():
         WHERE pl.username = ?
         GROUP BY g.id
         ORDER BY g.played_at DESC
+        LIMIT 50
         """,
         (username,),
     ).fetchall()
@@ -87,19 +88,11 @@ def get_game(game_db_id: int):
     db = get_db()
 
     game_row = db.execute(
-        "SELECT pgn_text FROM games WHERE id = ?", (game_db_id,)
+        "SELECT pgn_text, analysed FROM games WHERE id = ?", (game_db_id,)
     ).fetchone()
     if game_row is None:
         return jsonify({"error": "Game not found"}), 404
 
-    # TODO: Add to /api/game/:id response:
-    #   - eval per move for every ply (not just errors): requires storing full Stockfish sweep
-    #   - move classification for all moves ("best", "good", "ok", "book"): not stored today
-    #   - clock times per move: parse [%clk h:mm:ss] comments from pgn_text
-    #   - eval_before / eval_after absolute values (not just eval_drop_cp)
-    #   - pv_san should be returned as string[] (split on space), not a space-joined string
-    #   - brilliant move detection heuristic (sacrificial move that gains ≥30% win probability)
-    #   - full annotated move-by-move transform matching the FOCAL_GAME frontend shape
     error_rows = db.execute(
         """
         SELECT fen_before, fen_after, player_move, best_move, eval_drop_cp,
@@ -116,10 +109,17 @@ def get_game(game_db_id: int):
     # Index by fen_before for O(1) frontend lookup
     errors_by_fen = {e["fen_before"]: e for e in errors}
 
+    eval_rows = db.execute(
+        "SELECT half_move_index, eval_cp FROM move_evals WHERE game_id = ? ORDER BY half_move_index",
+        (game_db_id,),
+    ).fetchall()
+
     return jsonify({
         "pgn": game_row["pgn_text"],
+        "analysed": bool(game_row["analysed"]),
         "errors": errors,
         "errors_by_fen": errors_by_fen,
+        "move_evals": [dict(r) for r in eval_rows],
     })
 
 
@@ -127,7 +127,6 @@ def get_game(game_db_id: int):
 def sync_games():
     data = request.get_json(force=True)
     username = data.get("username", "")
-    max_games = int(data.get("max_games", 20))
 
     if not username:
         return jsonify({"error": "username required"}), 400
@@ -148,7 +147,7 @@ def sync_games():
 
         try:
             yield send("status", message="Fetching games from Chess.com…")
-            pgn_list = fetch_games(username, max_games)
+            pgn_list = fetch_games(username)
 
             db.execute(
                 "INSERT OR IGNORE INTO players (username, source) VALUES (?, ?)",
@@ -199,7 +198,7 @@ def analyse_game_route(game_db_id: int):
     def generate():
         import sqlite3
 
-        from ..analysis.engine import analyse_game
+        from ..analysis.engine import analyse_game, sweep_game_evals
         from ..analysis.tactics import identify_tactic
         from ..ingestion.parser import parse_pgn
 
@@ -281,6 +280,15 @@ def analyse_game_route(game_db_id: int):
             db.execute("UPDATE games SET analysed = 1 WHERE id = ?", (game_db_id,))
             db.commit()
 
+            yield send("status", message="Computing eval graph…")
+            move_evals = sweep_game_evals(game)
+            db.execute("DELETE FROM move_evals WHERE game_id = ?", (game_db_id,))
+            db.executemany(
+                "INSERT INTO move_evals (game_id, half_move_index, eval_cp) VALUES (?, ?, ?)",
+                [(game_db_id, ev["half_move_index"], ev["eval_cp"]) for ev in move_evals],
+            )
+            db.commit()
+
             from ..analysis.interest import score_game_from_db
             score_game_from_db(db, game_db_id)
 
@@ -327,43 +335,6 @@ def analyse_position():
         "best_move": best_move,
         "pv": pv_moves[:5],
     })
-
-
-@bp.get("/interesting-games")
-def interesting_games():
-    username = request.args.get("username", "")
-    limit = int(request.args.get("limit", 20))
-    db = get_db()
-
-    rows = db.execute(
-        """
-        SELECT g.id, g.game_id, g.source, g.result, g.time_control, g.played_at,
-               g.pgn_text, g.analysed, g.interest_score,
-               COUNT(p.id) AS error_count,
-               gr.phase AS review_phase
-        FROM players pl
-        JOIN games g ON g.player_id = pl.id
-        LEFT JOIN positions p ON p.game_id = g.id
-        LEFT JOIN game_reviews gr ON gr.game_id = g.id
-        WHERE pl.username = ?
-        GROUP BY g.id
-        ORDER BY g.interest_score DESC NULLS LAST, g.played_at DESC
-        LIMIT ?
-        """,
-        (username, limit),
-    ).fetchall()
-
-    result = []
-    for r in rows:
-        d = dict(r)
-        pgn = d.pop("pgn_text", "") or ""
-        white = _pgn_header(pgn, "White")
-        black = _pgn_header(pgn, "Black")
-        is_white = username.lower() in white.lower()
-        d["opponent"] = black if is_white else white
-        d["player_color"] = "white" if is_white else "black"
-        result.append(d)
-    return jsonify(result)
 
 
 @bp.get("/games/<int:game_db_id>/review")

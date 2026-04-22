@@ -51,6 +51,14 @@ CREATE TABLE IF NOT EXISTS game_reviews (
     UNIQUE(game_id)
 );
 
+CREATE TABLE IF NOT EXISTS move_evals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    half_move_index INTEGER NOT NULL,
+    eval_cp INTEGER NOT NULL,
+    UNIQUE(game_id, half_move_index)
+);
+
 CREATE TABLE IF NOT EXISTS move_annotations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,

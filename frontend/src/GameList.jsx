@@ -1,6 +1,6 @@
 // Game list sidebar. Shows recent games ranked by learning value.
 
-export default function GameList({ games, activeId, onSelect, username, gamesLoading }) {
+export default function GameList({ games, activeId, onSelect, username, gamesLoading, onSync, syncing }) {
   const initials = username ? username.slice(0, 2).toUpperCase() : "??";
 
   return (
@@ -8,9 +8,9 @@ export default function GameList({ games, activeId, onSelect, username, gamesLoa
       <div className="gl-header">
         <div className="gl-title">
           <span className="gl-title-main">Recent games</span>
-          <span className="gl-title-sub">ranked by learning value</span>
         </div>
-        <button className="gl-sync" title="Sync with chess.com">
+        <button className={`gl-sync${syncing ? " gl-sync--spinning" : ""}`} title="Sync with chess.com"
+          onClick={onSync} disabled={syncing}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="23 4 23 10 17 10" />
             <polyline points="1 20 1 14 7 14" />
@@ -59,7 +59,10 @@ export default function GameList({ games, activeId, onSelect, username, gamesLoa
           display: flex; align-items: center; justify-content: center;
           cursor: pointer; transition: color 0.15s, background 0.15s, border-color 0.15s;
         }
-        .gl-sync:hover { color: var(--text); background: var(--surface-2); border-color: var(--border-2); }
+        .gl-sync:hover:not(:disabled) { color: var(--text); background: var(--surface-2); border-color: var(--border-2); }
+        .gl-sync:disabled { opacity: 0.5; cursor: default; }
+        @keyframes gl-spin { to { transform: rotate(360deg); } }
+        .gl-sync--spinning svg { animation: gl-spin 0.8s linear infinite; }
         .gl-user-chip {
           display: flex; align-items: center; gap: 10px;
           padding: 10px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0;
