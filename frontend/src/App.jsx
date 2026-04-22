@@ -268,6 +268,24 @@ export default function App() {
     setAnnotations((a) => ({ ...a, [ply]: { ...(a[ply] || {}), [field]: val } }));
   }
 
+  const [triggerAsk, setTriggerAsk] = useState(null);
+
+  function handleAskCoach(ply) {
+    seek(ply);
+    const plyData = plies[ply];
+    if (!plyData || !game) return;
+    const pair = game.moves.find((m) => m.n === plyData.moveNo);
+    const mData = plyData.color === "w" ? pair?.white : pair?.black;
+    setTriggerAsk({
+      question: `Tell me about ${plyData.moveNo}${plyData.color === "w" ? "." : "…"} ${plyData.san}`,
+      fen: mData?.fenBefore || "",
+      playerMoveUci: mData?.playerMoveUci || "",
+      bestMoveUci: mData?.bestMoveUci || "",
+      evalDrop: mData?.evalDrop || 0,
+      conceptName: mData?.conceptName || "",
+    });
+  }
+
   return (
     <div className="app-root">
       <TopBar game={game} blindMode={blindMode} setBlindMode={setBlindMode}
@@ -312,7 +330,9 @@ export default function App() {
                   </div>
                 </div>
                 <div className="ws-moves-area">
-                  <MoveList game={game} currentPly={currentPly} onSeek={seek} blindMode={blindMode} />
+                  <MoveList game={game} currentPly={currentPly} onSeek={seek} blindMode={blindMode}
+                    userAnnotations={annotations} onUpdateAnnotation={updateAnnotation}
+                    onAskCoach={handleAskCoach} />
                 </div>
               </div>
             </>
@@ -326,10 +346,8 @@ export default function App() {
 
         <aside className="col-coach">
           <CoachPanel currentPly={currentPly} plies={plies} game={game} moveData={moveData}
-            onRequestSquare={() => {}} onRequestArrow={setProposedArrow}
-            blindMode={blindMode} onProposeMove={onProposeMove}
-            userAnnotations={annotations} onUpdateAnnotation={updateAnnotation}
-            onOpenVariation={() => {}} gameDbId={activeGameId} />
+            blindMode={blindMode} gameDbId={activeGameId}
+            triggerAsk={triggerAsk} onTriggerAskConsumed={() => setTriggerAsk(null)} />
         </aside>
       </div>
 

@@ -1,61 +1,117 @@
-// AI Coach right-rail. Tabs: Think · Hint · Judge · Explore · Ask
+// AI Coach right-rail. Chat-first: persistent chat + collapsible position strip.
 import { useState, useEffect, useRef } from "react";
 import { CLASS_META } from "./MoveList";
 import { formatEval } from "./EvalGraph";
-import { DRILL_SUGGESTIONS } from "./data";
 
 export default function CoachPanel({
-  currentPly, plies, game, moveData, onRequestSquare, onRequestArrow,
-  blindMode, onProposeMove, userAnnotations, onUpdateAnnotation, onOpenVariation,
-  gameDbId,
+  currentPly, plies, game, moveData,
+  blindMode, gameDbId,
+  triggerAsk, onTriggerAskConsumed,
 }) {
-  const [tab, setTab] = useState("think");
   const plyInfo = plies[currentPly];
   const moveDetails = moveData;
 
+  const [messages, setMessages] = useState([]);
+  const [streaming, setStreaming] = useState(false);
+  const [stripExpanded, setStripExpanded] = useState(false);
+  const lastAutoMsgPly = useRef(null);
+
+  // Reset chat when game changes
   useEffect(() => {
-    if (moveDetails?.isCritical && blindMode) setTab("think");
-    if (moveDetails?.isCritical && !blindMode) setTab("judge");
-  }, [currentPly, blindMode]);
+    setMessages([]);
+    lastAutoMsgPly.current = null;
+  }, [gameDbId]);
+
+  // Proactive coach message on critical ply navigation
+  useEffect(() => {
+    if (!moveDetails?.isCritical || !plyInfo) return;
+    if (lastAutoMsgPly.current === currentPly) return;
+    lastAutoMsgPly.current = currentPly;
+    const san = plyInfo.san;
+    const mn = `${plyInfo.moveNo}${plyInfo.color === "w" ? "." : "…"} ${san}`;
+    const msg = blindMode
+      ? `Something happened on move ${mn}. Take your time — what did you see?`
+      : `Move ${mn} was ${CLASS_META[moveDetails.class]?.label || "notable"}. What were you calculating?`;
+    setMessages((m) => [...m, { role: "assistant", text: msg }]);
+  }, [currentPly]);
+
+  // External trigger from "Ask coach about this" in context menu
+  useEffect(() => {
+    if (!triggerAsk) return;
+    lastAutoMsgPly.current = currentPly; // suppress proactive msg for this ply
+    const q = triggerAsk.question;
+    setMessages((m) => [...m, { role: "user", text: q }, { role: "assistant", text: "" }]);
+    setStreaming(true);
+    fetch("/api/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fen: triggerAsk.fen || "",
+        player_move: triggerAsk.playerMoveUci || "",
+        best_move: triggerAsk.bestMoveUci || "",
+        eval_drop_cp: triggerAsk.evalDrop || 0,
+        concept_name: triggerAsk.conceptName || "",
+        question: q,
+      }),
+    }).then((res) => {
+      readSse(res,
+        ({ text }) => {
+          if (text) setMessages((m) => {
+            const copy = [...m];
+            copy[copy.length - 1] = { role: "assistant", text: copy[copy.length - 1].text + text };
+            return copy;
+          });
+        },
+        () => setStreaming(false)
+      );
+    }).catch(() => setStreaming(false));
+    onTriggerAskConsumed?.();
+  }, [triggerAsk]);
 
   return (
     <div className="cp-root">
       <CoachHeader plyInfo={plyInfo} moveDetails={moveDetails} blindMode={blindMode} />
-      <div className="cp-tabs">
-        <TabBtn active={tab === "think"} onClick={() => setTab("think")} label="Think"
-          badge={moveDetails?.isCritical && blindMode ? "•" : null} />
-        <TabBtn active={tab === "hint"} onClick={() => setTab("hint")} label="Hint" icon="bulb" />
-        <TabBtn active={tab === "judge"} onClick={() => setTab("judge")} label="Judge" icon="scale" disabled={blindMode} />
-        <TabBtn active={tab === "explore"} onClick={() => setTab("explore")} label="Explore" icon="tree" />
-        <TabBtn active={tab === "ask"} onClick={() => setTab("ask")} label="Ask" icon="msg" />
-      </div>
-      <div className="cp-body">
-        {tab === "think" && (
-          <ThinkTab moveDetails={moveDetails} plyInfo={plyInfo}
-            annotation={userAnnotations[plyInfo?.ply] || {}}
-            onUpdate={(field, val) => onUpdateAnnotation(plyInfo.ply, field, val)}
-            blindMode={blindMode} />
-        )}
-        {tab === "hint" && (
-          <HintTab moveDetails={moveDetails} gameDbId={gameDbId}
-            onRequestSquare={onRequestSquare} />
-        )}
-        {tab === "judge" && (
-          <JudgeTab moveDetails={moveDetails} blindMode={blindMode}
-            onProposeMove={onProposeMove} onRequestArrow={onRequestArrow} />
-        )}
-        {tab === "explore" && <ExploreTab moveDetails={moveDetails} onOpenVariation={onOpenVariation} />}
-        {tab === "ask" && (
-          <AskTab plyInfo={plyInfo} moveDetails={moveDetails} gameDbId={gameDbId} />
-        )}
-      </div>
+      <PositionStrip
+        plyInfo={plyInfo}
+        moveDetails={moveDetails}
+        blindMode={blindMode}
+        expanded={stripExpanded}
+        onToggle={() => setStripExpanded((e) => !e)}
+      />
+      <ChatPanel
+        messages={messages}
+        setMessages={setMessages}
+        streaming={streaming}
+        setStreaming={setStreaming}
+        plyInfo={plyInfo}
+        moveDetails={moveDetails}
+        gameDbId={gameDbId}
+        blindMode={blindMode}
+      />
       <style>{`
         .cp-root { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--surface); border-left: 1px solid var(--border); }
-        .cp-tabs { display: flex; border-bottom: 1px solid var(--border); padding: 0 6px; flex-shrink: 0; background: var(--bg-2); }
-        .cp-body { flex: 1; overflow-y: auto; padding: 16px; }
       `}</style>
     </div>
   );
+}
+
+function readSse(response, onChunk, onDone) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  function pump() {
+    reader.read().then(({ done, value }) => {
+      if (done) { onDone(); return; }
+      const text = decoder.decode(value, { stream: true });
+      for (const line of text.split("\n")) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (data === "[DONE]") { onDone(); return; }
+        try { onChunk(JSON.parse(data)); } catch (_) {}
+      }
+      pump();
+    }).catch(onDone);
+  }
+  pump();
 }
 
 function CoachHeader({ plyInfo, moveDetails, blindMode }) {
@@ -102,493 +158,82 @@ function CoachHeader({ plyInfo, moveDetails, blindMode }) {
   );
 }
 
-function TabBtn({ active, onClick, label, icon, badge, disabled }) {
-  return (
-    <button className={`tb ${active ? "active" : ""} ${disabled ? "disabled" : ""}`}
-      onClick={disabled ? undefined : onClick}
-      title={disabled ? "Available after you reveal engine analysis" : undefined}
-    >
-      <TabIcon name={icon} />
-      <span>{label}</span>
-      {badge && <span className="tb-badge" />}
-      <style>{`
-        .tb { display: inline-flex; align-items: center; gap: 5px; background: none; border: none; padding: 10px 10px; font-size: 12px; color: var(--text-dim); font-family: var(--font-ui); font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; position: relative; transition: color 0.12s, border-color 0.12s; }
-        .tb:hover:not(.disabled) { color: var(--text); }
-        .tb.active { color: var(--text); border-bottom-color: var(--accent); }
-        .tb.disabled { opacity: 0.35; cursor: not-allowed; }
-        .tb-badge { width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
-      `}</style>
-    </button>
-  );
-}
+function PositionStrip({ plyInfo, moveDetails, blindMode, expanded, onToggle }) {
+  if (!moveDetails?.isCritical || !plyInfo?.san) return null;
 
-function TabIcon({ name }) {
-  const common = { width: 13, height: 13, fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" };
-  if (name === "bulb") return <svg viewBox="0 0 24 24" {...common}><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.7.6 1 1.4 1 2.3h6c0-.9.3-1.7 1-2.3A7 7 0 0 0 12 2z"/></svg>;
-  if (name === "scale") return <svg viewBox="0 0 24 24" {...common}><path d="M12 3v18M5 7h14M5 7l-2 6c0 2 2 3 4 3s4-1 4-3L9 7zm10 0l-2 6c0 2 2 3 4 3s4-1 4-3l-2-6"/></svg>;
-  if (name === "tree") return <svg viewBox="0 0 24 24" {...common}><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><circle cx="12" cy="12" r="2"/><path d="M7.4 7.4l3.2 3.2M16.6 7.4l-3.2 3.2M13.4 13.4l3.2 3.2"/></svg>;
-  if (name === "msg") return <svg viewBox="0 0 24 24" {...common}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>;
-  return null;
-}
-
-function ThinkTab({ moveDetails, plyInfo, annotation, onUpdate, blindMode }) {
-  const classifications = [
-    { v: "good", label: "Good move", color: "var(--accent)" },
-    { v: "inaccuracy", label: "Inaccuracy", color: "#dcb75a" },
-    { v: "mistake", label: "Mistake", color: "var(--warn)" },
-    { v: "blunder", label: "Blunder", color: "var(--danger)" },
-  ];
-  const isCritical = moveDetails?.isCritical;
+  const hasEngineDetail = !blindMode && moveDetails?.isCritical;
 
   return (
-    <div className="think fade-up">
-      {blindMode && isCritical && (
-        <div className="think-flag">
-          <span className="flag-bullet" />
-          <div>
-            <div className="flag-title">Something important happened here</div>
-            <div className="flag-sub">Take your time. What did you see? What did you miss?</div>
-          </div>
-        </div>
-      )}
-      <section>
-        <label className="sec-lbl">Your thinking</label>
-        <textarea className="think-ta"
-          placeholder="What were you calculating? What candidate moves did you see?"
-          value={annotation.thought || ""}
-          onChange={(e) => onUpdate("thought", e.target.value)}
-          rows="4" />
-      </section>
-      <section>
-        <label className="sec-lbl">How would you rate your move?</label>
-        <div className="think-cls">
-          {classifications.map((c) => (
-            <button key={c.v}
-              className={`cls-btn ${annotation.classification === c.v ? "on" : ""}`}
-              style={{ "--cls-color": c.color }}
-              onClick={() => onUpdate("classification", annotation.classification === c.v ? null : c.v)}
-            >
-              <span className="cls-dot" />
-              {c.label}
-            </button>
-          ))}
-        </div>
-      </section>
-      {!blindMode && moveDetails?.isCritical && (
-        <section className="think-verdict">
-          <div className="verdict-label">Engine verdict</div>
-          <div className="verdict-row">
-            <span className="v-chip" style={{ color: CLASS_META[moveDetails.class]?.color, borderColor: CLASS_META[moveDetails.class]?.color }}>
+    <div className={`ps ${expanded ? "expanded" : ""}`}>
+      <button className="ps-bar" onClick={onToggle}>
+        {hasEngineDetail ? (
+          <>
+            <span className="ps-chip" style={{ color: CLASS_META[moveDetails.class]?.color, borderColor: CLASS_META[moveDetails.class]?.color }}>
               {CLASS_META[moveDetails.class]?.label}
             </span>
-            {(moveDetails.evalBefore != null || moveDetails.evalAfter != null) && (
-              <span className="v-swing">
+            {moveDetails.evalBefore != null && moveDetails.evalAfter != null && (
+              <span className="ps-eval">
                 {formatEval(moveDetails.evalBefore)}
-                <span className="v-arrow">→</span>
+                <span className="ps-arrow">→</span>
                 {formatEval(moveDetails.evalAfter)}
               </span>
             )}
-            {moveDetails.evalDrop > 0 && moveDetails.evalBefore == null && (
-              <span className="v-swing">−{moveDetails.evalDrop}cp</span>
-            )}
-          </div>
-          {moveDetails.comment && <p className="v-copy">{moveDetails.comment}</p>}
-        </section>
-      )}
-      <style>{`
-        .think { display: flex; flex-direction: column; gap: 18px; }
-        .think-flag { display: flex; gap: 10px; align-items: flex-start; padding: 12px; background: var(--warn-muted); border: 1px solid var(--warn); border-radius: var(--radius); }
-        .flag-bullet { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); margin-top: 6px; flex-shrink: 0; animation: pulse 1.8s ease-in-out infinite; }
-        .flag-title { font-size: 13px; font-weight: 600; color: var(--text); }
-        .flag-sub { font-size: 12px; color: var(--text-muted); font-style: italic; font-family: var(--font-serif); margin-top: 2px; }
-        .sec-lbl { display: block; font-size: 11px; font-weight: 500; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px; }
-        .think-ta { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-ui); font-size: 13px; padding: 10px; resize: vertical; min-height: 80px; line-height: 1.5; outline: none; transition: border-color 0.15s; }
-        .think-ta:focus { border-color: var(--accent); }
-        .think-cls { display: flex; flex-wrap: wrap; gap: 6px; }
-        .cls-btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 99px; font-size: 12px; color: var(--text-muted); cursor: pointer; transition: all 0.12s; }
-        .cls-btn:hover { border-color: var(--cls-color); color: var(--cls-color); }
-        .cls-btn.on { background: color-mix(in srgb, var(--cls-color) 14%, transparent); border-color: var(--cls-color); color: var(--cls-color); font-weight: 600; }
-        .cls-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cls-color); }
-        .think-verdict { padding: 12px; background: var(--bg-2); border: 1px solid var(--border); border-left: 3px solid var(--warn); border-radius: var(--radius-sm); }
-        .verdict-label { font-size: 10px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px; }
-        .verdict-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-        .v-chip { padding: 2px 8px; border: 1px solid; border-radius: 99px; font-size: 11px; font-weight: 600; }
-        .v-swing { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); display: inline-flex; gap: 4px; align-items: center; }
-        .v-arrow { color: var(--text-dim); }
-        .v-copy { margin: 0; font-size: 13px; line-height: 1.55; color: var(--text); font-family: var(--font-serif); font-style: italic; }
-      `}</style>
-    </div>
-  );
-}
-
-function readSse(response, onChunk, onDone) {
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  function pump() {
-    reader.read().then(({ done, value }) => {
-      if (done) { onDone(); return; }
-      const text = decoder.decode(value, { stream: true });
-      for (const line of text.split("\n")) {
-        if (!line.startsWith("data: ")) continue;
-        const data = line.slice(6).trim();
-        if (data === "[DONE]") { onDone(); return; }
-        try { onChunk(JSON.parse(data)); } catch (_) {}
-      }
-      pump();
-    }).catch(onDone);
-  }
-  pump();
-}
-
-function HintTab({ moveDetails, gameDbId, onRequestSquare }) {
-  const [hints, setHints] = useState([]);
-  const [streaming, setStreaming] = useState(false);
-
-  // Reset when the critical move changes
-  useEffect(() => {
-    setHints([]);
-    setStreaming(false);
-  }, [moveDetails?.square, moveDetails?.fenBefore]);
-
-  const maxHints = 3;
-
-  function nextHint() {
-    if (streaming || hints.length >= maxHints) return;
-
-    if (!gameDbId || !moveDetails?.fenBefore) {
-      // Fallback generic hints when no position context
-      const fallback = [
-        "Take a breath. What's the most forcing move available here?",
-        "Count the attackers and defenders on each weak square.",
-        "Is there a piece on the edge of the board doing nothing?",
-      ];
-      const next = fallback[hints.length];
-      if (next) {
-        setStreaming(true);
-        setTimeout(() => { setHints((h) => [...h, next]); setStreaming(false); }, 600);
-      }
-      return;
-    }
-
-    setStreaming(true);
-    let accumulated = "";
-
-    fetch(`/api/games/${gameDbId}/review/hint`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        fen: moveDetails.fenBefore,
-        move_number: moveDetails.moveNo || 0,
-        player_move: moveDetails.playerMoveUci || "",
-        user_thought: "",
-      }),
-    }).then((res) => {
-      readSse(res,
-        ({ text }) => { if (text) accumulated += text; },
-        () => {
-          if (accumulated) setHints((h) => [...h, accumulated]);
-          setStreaming(false);
-        }
-      );
-    }).catch(() => setStreaming(false));
-  }
-
-  return (
-    <div className="hint fade-up">
-      <div className="hint-prompt">
-        <div className="hint-prompt-lbl">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.7.6 1 1.4 1 2.3h6c0-.9.3-1.7 1-2.3A7 7 0 0 0 12 2z"/>
-          </svg>
-          Socratic hints
-        </div>
-        <div className="hint-prompt-sub">I won't tell you the answer — I'll ask questions that help you find it.</div>
-      </div>
-      <div className="hint-stream">
-        {hints.map((h, i) => (
-          <div className="hint-bubble fade-up" key={i}>
-            <div className="hint-num">{i + 1}</div>
-            <div className="hint-text">{h}</div>
-          </div>
-        ))}
-        {streaming && (
-          <div className="hint-bubble hint-typing">
-            <div className="hint-num">{hints.length + 1}</div>
-            <div className="typing-dots"><span/><span/><span/></div>
-          </div>
-        )}
-      </div>
-      <div className="hint-actions">
-        {hints.length < maxHints ? (
-          <button className="btn-primary" onClick={nextHint} disabled={streaming}>
-            {hints.length === 0 ? "Give me a hint" : "Nudge me further"}
-          </button>
+          </>
         ) : (
-          <div className="hint-done">
-            <span className="hint-done-lbl">That's all I'll say.</span>
-            <span className="hint-done-sub">Try the <em>Judge</em> tab to test a move.</span>
-          </div>
+          <span className="ps-blind-label">Critical moment · engine hidden</span>
         )}
-      </div>
-      <style>{`
-        .hint { display: flex; flex-direction: column; gap: 16px; }
-        .hint-prompt { padding: 12px; background: var(--info-muted); border: 1px solid color-mix(in srgb, var(--info) 40%, transparent); border-radius: var(--radius); }
-        .hint-prompt-lbl { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--info); }
-        .hint-prompt-sub { font-size: 12px; color: var(--text-muted); font-style: italic; font-family: var(--font-serif); margin-top: 4px; }
-        .hint-stream { display: flex; flex-direction: column; gap: 10px; }
-        .hint-bubble { display: flex; gap: 10px; padding: 12px; background: var(--bg-2); border: 1px solid var(--border); border-left: 3px solid var(--info); border-radius: var(--radius-sm); }
-        .hint-num { flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%; background: var(--info-muted); color: var(--info); font-size: 11px; font-weight: 700; font-family: var(--font-mono); display: flex; align-items: center; justify-content: center; }
-        .hint-text { font-size: 13px; line-height: 1.55; color: var(--text); font-family: var(--font-serif); }
-        .typing-dots { display: inline-flex; gap: 3px; align-items: center; height: 20px; }
-        .typing-dots span { width: 5px; height: 5px; border-radius: 50%; background: var(--text-dim); animation: td-bounce 1.2s infinite; }
-        .typing-dots span:nth-child(2) { animation-delay: 0.15s; }
-        .typing-dots span:nth-child(3) { animation-delay: 0.3s; }
-        @keyframes td-bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.5; } 30% { transform: translateY(-4px); opacity: 1; } }
-        .hint-actions { margin-top: 4px; }
-        .btn-primary { width: 100%; padding: 10px 14px; background: var(--accent); color: #0b0c0d; border: none; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600; font-family: var(--font-ui); cursor: pointer; transition: filter 0.12s; }
-        .btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
-        .btn-primary:disabled { opacity: 0.6; cursor: default; }
-        .hint-done { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; background: var(--surface-2); border: 1px dashed var(--border-2); border-radius: var(--radius-sm); text-align: center; }
-        .hint-done-lbl { font-size: 12px; color: var(--text); font-weight: 500; }
-        .hint-done-sub { font-size: 12px; color: var(--text-muted); font-style: italic; font-family: var(--font-serif); }
-        .hint-done em { color: var(--accent); font-style: normal; font-family: var(--font-ui); font-weight: 600; }
-      `}</style>
-    </div>
-  );
-}
-
-function JudgeTab({ moveDetails, blindMode, onProposeMove, onRequestArrow }) {
-  const [proposal, setProposal] = useState("");
-  const [verdicts, setVerdicts] = useState([]);
-  const [judging, setJudging] = useState(false);
-
-  function judge(move) {
-    if (!move) return;
-    setJudging(true);
-    onRequestArrow?.({ from: null, to: null });
-    // TODO: Wire to POST /api/games/:id/review/judge when endpoint is available.
-    setTimeout(() => {
-      setJudging(false);
-      setVerdicts((v) => [...v, {
-        move,
-        verdict: "unknown",
-        note: "Judge endpoint not yet implemented. The backend will evaluate this move with Stockfish and explain the result.",
-      }]);
-      setProposal("");
-    }, 400);
-  }
-
-  return (
-    <div className="judge fade-up">
-      <div className="judge-intro">
-        <div className="judge-intro-lbl">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <path d="M12 3v18M5 7h14M5 7l-2 6c0 2 2 3 4 3s4-1 4-3L9 7zm10 0l-2 6c0 2 2 3 4 3s4-1 4-3l-2-6"/>
-          </svg>
-          Try a move on me
-        </div>
-        <div className="judge-intro-sub">Propose any move. I'll tell you what the engine thinks and why.</div>
-      </div>
-      <div className="judge-input">
-        <input type="text" placeholder="e.g. Qxg6, Re1, Nxf7…"
-          value={proposal} onChange={(e) => setProposal(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && judge(proposal)} />
-        <button className="btn-primary" onClick={() => judge(proposal)} disabled={!proposal.trim() || judging}>
-          {judging ? "…" : "Judge"}
-        </button>
-      </div>
-      <div className="judge-stream">
-        {verdicts.map((v, i) => <VerdictCard v={v} key={i} />)}
-        {verdicts.length === 0 && !judging && (
-          <div className="judge-empty">
-            <div className="judge-empty-art">
-              <div className="je-line" /><div className="je-line s" /><div className="je-line s" />
+        <span className="ps-toggle">{expanded ? "▲" : "▼"}</span>
+      </button>
+      {expanded && hasEngineDetail && (
+        <div className="ps-detail">
+          {moveDetails.comment && <p className="ps-comment">{moveDetails.comment}</p>}
+          {moveDetails.bestMoveUci && (
+            <div className="ps-best">
+              Best move: <span className="ps-best-move">{moveDetails.bestMoveUci}</span>
             </div>
-            <div className="judge-empty-text">No judgements yet.<br/><span className="je-hint">Pick a move you'd actually play and test it.</span></div>
-          </div>
-        )}
-        {judging && (
-          <div className="judge-thinking"><div className="spin" /><span>running Stockfish…</span></div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
       <style>{`
-        .judge { display: flex; flex-direction: column; gap: 14px; }
-        .judge-intro { padding: 12px; background: var(--accent-muted); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: var(--radius); }
-        .judge-intro-lbl { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--accent); }
-        .judge-intro-sub { font-size: 12px; color: var(--text-muted); font-style: italic; font-family: var(--font-serif); margin-top: 4px; }
-        .judge-input { display: flex; gap: 6px; }
-        .judge-input input { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-mono); font-size: 13px; padding: 8px 10px; outline: none; transition: border-color 0.15s; }
-        .judge-input input:focus { border-color: var(--accent); }
-        .judge-input .btn-primary { width: auto; padding: 8px 14px; }
-        .judge-stream { display: flex; flex-direction: column; gap: 10px; min-height: 60px; }
-        .judge-empty { padding: 20px 12px; text-align: center; color: var(--text-dim); font-size: 12px; font-style: italic; font-family: var(--font-serif); }
-        .judge-empty-art { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-bottom: 10px; opacity: 0.4; }
-        .je-line { width: 36px; height: 1.5px; background: var(--text-dim); border-radius: 1px; }
-        .je-line.s { width: 20px; }
-        .je-hint { font-family: var(--font-ui); font-style: normal; font-size: 11px; }
-        .judge-thinking { display: flex; align-items: center; gap: 8px; padding: 10px; color: var(--text-muted); font-size: 12px; font-family: var(--font-mono); }
-        .spin { width: 12px; height: 12px; border: 2px solid var(--border-2); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
-        @keyframes spin { to { transform: rotate(360deg); } }
+        .ps { border-bottom: 1px solid var(--border); background: var(--bg-2); flex-shrink: 0; }
+        .ps-bar { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 14px; background: none; border: none; cursor: pointer; text-align: left; }
+        .ps-bar:hover { background: var(--surface-2); }
+        .ps-chip { font-size: 10px; font-weight: 600; padding: 1px 6px; border: 1px solid; border-radius: 99px; text-transform: uppercase; letter-spacing: 0.4px; }
+        .ps-eval { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); display: inline-flex; gap: 4px; align-items: center; }
+        .ps-arrow { color: var(--text-dim); }
+        .ps-blind-label { font-size: 11px; color: var(--text-dim); font-family: var(--font-serif); font-style: italic; }
+        .ps-toggle { margin-left: auto; font-size: 9px; color: var(--text-dim); }
+        .ps-detail { padding: 0 14px 10px; }
+        .ps-comment { margin: 0 0 6px; font-size: 12px; line-height: 1.55; color: var(--text); font-family: var(--font-serif); font-style: italic; }
+        .ps-best { font-size: 11px; color: var(--text-muted); }
+        .ps-best-move { font-family: var(--font-mono); color: var(--accent); font-style: normal; }
       `}</style>
     </div>
   );
 }
 
-function VerdictCard({ v }) {
-  const meta = {
-    best:       { label: "Best!", color: "var(--accent)", icon: "✓" },
-    close:      { label: "Close", color: "#dcb75a", icon: "≈" },
-    inaccurate: { label: "Inaccurate", color: "var(--warn)", icon: "?!" },
-    blunder:    { label: "Loses", color: "var(--danger)", icon: "??" },
-    unknown:    { label: "Off-engine", color: "var(--text-muted)", icon: "?" },
-  }[v.verdict] || { label: v.verdict, color: "var(--text-muted)", icon: "·" };
-
-  return (
-    <div className="vc fade-up" style={{ "--vc-color": meta.color }}>
-      <div className="vc-head">
-        <span className="vc-move">{v.move}</span>
-        <span className="vc-verdict">{meta.icon} {meta.label}</span>
-        {v.evalAfter != null && <span className="vc-eval">{formatEval(v.evalAfter)}</span>}
-      </div>
-      <div className="vc-note">{v.note}</div>
-      <style>{`
-        .vc { padding: 10px 12px; background: color-mix(in srgb, var(--vc-color) 8%, var(--bg-2)); border: 1px solid color-mix(in srgb, var(--vc-color) 40%, transparent); border-left: 3px solid var(--vc-color); border-radius: var(--radius-sm); }
-        .vc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-        .vc-move { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text); }
-        .vc-verdict { font-size: 11px; font-weight: 600; color: var(--vc-color); text-transform: uppercase; letter-spacing: 0.5px; }
-        .vc-eval { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
-        .vc-note { font-size: 13px; line-height: 1.55; color: var(--text-muted); font-family: var(--font-serif); font-style: italic; }
-      `}</style>
-    </div>
-  );
-}
-
-function ExploreTab({ moveDetails, onOpenVariation }) {
-  const bestLine = moveDetails?.bestLine || [];
-  const examples = moveDetails?.examples || [];
-
-  return (
-    <div className="expl fade-up">
-      {bestLine.length > 0 ? (
-        <section>
-          <div className="sec-head">
-            <span className="sec-title">What should've happened</span>
-            <span className="sec-sub">Click any move to step into the variation</span>
-          </div>
-          <div className="expl-line">
-            {bestLine.map((san, i) => (
-              <button key={i} className="expl-move" onClick={() => onOpenVariation?.(i)}>
-                <span className="expl-moveNum">{Math.floor(i / 2) + (moveDetails?.moveNo || 1)}{i % 2 === 0 ? "." : "…"}</span>
-                <span>{san}</span>
-              </button>
-            ))}
-          </div>
-          <button className="btn-ghost full" onClick={() => onOpenVariation?.(0)}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 3v18l15-9L5 3z"/></svg>
-            Play through the variation
-          </button>
-        </section>
-      ) : (
-        <section>
-          <div className="sec-head"><span className="sec-title">No critical branches here</span></div>
-          <p className="muted-copy">This move was fine. Use the navigator to find the moments that matter — look for the orange markers on the eval graph.</p>
-        </section>
-      )}
-      {examples.length > 0 && (
-        <section>
-          <div className="sec-head">
-            <span className="sec-title">Pattern library</span>
-            <span className="sec-sub">Positions where this motif decides the game</span>
-          </div>
-          {examples.map((ex, i) => <ExampleCard ex={ex} key={i} />)}
-        </section>
-      )}
-      {DRILL_SUGGESTIONS.length > 0 && (
-        <section>
-          <div className="sec-head"><span className="sec-title">Drills from this game</span></div>
-          {DRILL_SUGGESTIONS.map((d, i) => <DrillCard drill={d} key={i} />)}
-        </section>
-      )}
-      <style>{`
-        .expl { display: flex; flex-direction: column; gap: 18px; }
-        .sec-head { margin-bottom: 8px; }
-        .sec-title { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.6px; display: block; }
-        .sec-sub { font-size: 12px; color: var(--text-muted); font-style: italic; font-family: var(--font-serif); }
-        .muted-copy { font-size: 13px; line-height: 1.55; color: var(--text-muted); font-family: var(--font-serif); font-style: italic; margin: 0; }
-        .expl-line { display: flex; flex-wrap: wrap; gap: 3px; padding: 8px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 8px; }
-        .expl-move { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; background: none; border: 1px solid transparent; border-radius: 3px; font-family: var(--font-mono); font-size: 12px; color: var(--text); cursor: pointer; transition: all 0.1s; }
-        .expl-move:hover { background: var(--accent-muted); border-color: var(--accent); }
-        .expl-moveNum { color: var(--text-dim); }
-        .btn-ghost { display: inline-flex; align-items: center; gap: 6px; justify-content: center; padding: 8px 12px; background: none; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-muted); font-size: 12px; cursor: pointer; transition: all 0.12s; }
-        .btn-ghost.full { width: 100%; }
-        .btn-ghost:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-muted); }
-        .exc { display: flex; gap: 10px; padding: 10px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 8px; cursor: pointer; transition: border-color 0.12s; }
-        .exc:hover { border-color: var(--border-2); }
-        .exc-mini { width: 48px; height: 48px; flex-shrink: 0; background: repeating-conic-gradient(var(--square-dark) 0 25%, var(--square-light) 0 50%) 0 0 / 100% 100%; border-radius: 3px; display: flex; align-items: center; justify-content: center; }
-        .exc-pieces { font-size: 22px; color: #111; text-shadow: 0 0 2px #fff; }
-        .exc-body { flex: 1; min-width: 0; }
-        .exc-title { font-size: 12px; font-weight: 600; color: var(--text); }
-        .exc-caption { font-size: 12px; color: var(--text-muted); font-family: var(--font-serif); font-style: italic; line-height: 1.4; margin-top: 2px; }
-        .dc { padding: 10px 12px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 8px; cursor: pointer; transition: border-color 0.12s; }
-        .dc:hover { border-color: var(--accent); }
-        .dc-tag { display: inline-block; font-size: 10px; font-weight: 600; color: var(--accent); background: var(--accent-muted); padding: 1px 6px; border-radius: 99px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-        .dc-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
-        .dc-meta { display: flex; gap: 5px; font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
-        .dc-meta .dot { opacity: 0.5; }
-        .dc-from { font-size: 11px; color: var(--text-dim); font-style: italic; font-family: var(--font-serif); margin-top: 4px; }
-      `}</style>
-    </div>
-  );
-}
-
-function ExampleCard({ ex }) {
-  return (
-    <div className="exc">
-      <div className="exc-mini"><div className="exc-pieces">♖♕</div></div>
-      <div className="exc-body">
-        <div className="exc-title">{ex.title}</div>
-        <div className="exc-caption">{ex.caption}</div>
-      </div>
-    </div>
-  );
-}
-
-function DrillCard({ drill }) {
-  return (
-    <div className="dc">
-      <div className="dc-tag">{drill.tag}</div>
-      <div className="dc-title">{drill.title}</div>
-      <div className="dc-meta">
-        <span>{drill.difficulty}</span>
-        <span className="dot">·</span>
-        <span>{drill.length}</span>
-      </div>
-      <div className="dc-from">From: {drill.from}</div>
-    </div>
-  );
-}
-
-function AskTab({ plyInfo, moveDetails, gameDbId }) {
-  const [messages, setMessages] = useState([
-    { role: "assistant", text: moveDetails?.isCritical
-      ? `I'm here. What would you like to understand about ${plyInfo?.san}?`
-      : "Ask me anything about this position." },
-  ]);
+function ChatPanel({ messages, setMessages, streaming, setStreaming, plyInfo, moveDetails, gameDbId, blindMode }) {
   const [input, setInput] = useState("");
-  const [streaming, setStreaming] = useState(false);
   const feedRef = useRef(null);
 
   useEffect(() => {
     feedRef.current?.scrollTo({ top: feedRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
-  function send() {
-    if (!input.trim() || streaming) return;
-    const q = input.trim();
-    setMessages((m) => [...m, { role: "user", text: q }]);
-    setInput("");
+  function appendToLast(text) {
+    setMessages((m) => {
+      const copy = [...m];
+      copy[copy.length - 1] = { role: "assistant", text: copy[copy.length - 1].text + text };
+      return copy;
+    });
+  }
+
+  function send(question) {
+    const q = (question ?? input).trim();
+    if (!q || streaming) return;
+    if (question == null) setInput("");
+    setMessages((m) => [...m, { role: "user", text: q }, { role: "assistant", text: "" }]);
     setStreaming(true);
-    setMessages((m) => [...m, { role: "assistant", text: "" }]);
 
     fetch("/api/ask", {
       method: "POST",
@@ -602,68 +247,125 @@ function AskTab({ plyInfo, moveDetails, gameDbId }) {
         question: q,
       }),
     }).then((res) => {
-      readSse(res,
-        ({ text }) => {
-          if (text) {
-            setMessages((m) => {
-              const copy = [...m];
-              copy[copy.length - 1] = { role: "assistant", text: copy[copy.length - 1].text + text };
-              return copy;
-            });
-          }
-        },
-        () => setStreaming(false)
-      );
+      readSse(res, ({ text }) => { if (text) appendToLast(text); }, () => setStreaming(false));
     }).catch(() => {
       setMessages((m) => {
         const copy = [...m];
-        copy[copy.length - 1] = { role: "assistant", text: "Sorry, I couldn't connect to the coach right now." };
+        copy[copy.length - 1] = { role: "assistant", text: "Sorry, couldn't reach the coach right now." };
         return copy;
       });
       setStreaming(false);
     });
   }
 
+  function getHint() {
+    if (!gameDbId || !moveDetails?.fenBefore) { send("Give me a hint about this position."); return; }
+    setMessages((m) => [...m, { role: "user", text: "Give me a hint." }, { role: "assistant", text: "" }]);
+    setStreaming(true);
+    fetch(`/api/games/${gameDbId}/review/hint`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fen: moveDetails.fenBefore,
+        move_number: moveDetails.moveNo || 0,
+        player_move: moveDetails.playerMoveUci || "",
+        user_thought: "",
+      }),
+    }).then((res) => {
+      readSse(res, ({ text }) => { if (text) appendToLast(text); }, () => setStreaming(false));
+    }).catch(() => setStreaming(false));
+  }
+
+  function showBestLine() {
+    const line = moveDetails?.bestLine;
+    if (!line?.length) return;
+    const base = moveDetails.moveNo || 1;
+    const formatted = line.map((san, i) => {
+      const mn = Math.floor(i / 2) + base;
+      return `${mn}${i % 2 === 0 ? "." : "…"} ${san}`;
+    }).join("  ");
+    setMessages((m) => [
+      ...m,
+      { role: "user", text: "Show me what should have happened." },
+      { role: "assistant", text: `Best continuation: ${formatted}` },
+    ]);
+  }
+
+  const isCritical = moveDetails?.isCritical;
+  const hasBestLine = !blindMode && moveDetails?.bestLine?.length > 0;
+
   return (
-    <div className="ask fade-up">
-      <div className="ask-feed" ref={feedRef}>
+    <div className="chat">
+      <div className="chat-feed" ref={feedRef}>
+        {messages.length === 0 && (
+          <div className="chat-empty">
+            <div className="chat-empty-icon">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+            </div>
+            <p className="chat-empty-text">Navigate to a position and ask me anything, or right-click any move to annotate it.</p>
+          </div>
+        )}
         {messages.map((m, i) => (
-          <div key={i} className={`ask-bubble ${m.role}`}>
-            {m.text || (m.role === "assistant" && streaming && i === messages.length - 1
-              ? <span className="typing-dots"><span/><span/><span/></span>
-              : null)}
+          <div key={i} className={`chat-bubble ${m.role}`}>
+            {m.text
+              ? m.text
+              : (m.role === "assistant" && streaming && i === messages.length - 1)
+                ? <span className="typing-dots"><span /><span /><span /></span>
+                : null}
           </div>
         ))}
       </div>
-      <div className="ask-suggested">
-        {["What's Black's threat?", "Why was my move bad?", "What should I have played?"].map((s) => (
-          <button key={s} className="chip" onClick={() => setInput(s)}>{s}</button>
-        ))}
+
+      {isCritical && (
+        <div className="chat-chips">
+          <button className="chip" onClick={getHint} disabled={streaming}>Get a hint</button>
+          {hasBestLine && (
+            <button className="chip" onClick={showBestLine} disabled={streaming}>Show best line</button>
+          )}
+          <button className="chip" onClick={() => send("Why was this move bad?")} disabled={streaming}>
+            Why was this bad?
+          </button>
+        </div>
+      )}
+
+      <div className="chat-input-row">
+        <textarea
+          className="chat-ta"
+          placeholder="Ask about this position…"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          rows={2}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+        />
+        <button className="chat-send" onClick={() => send()} disabled={!input.trim() || streaming}>→</button>
       </div>
-      <div className="ask-input">
-        <textarea placeholder="Ask about this position…" value={input}
-          onChange={(e) => setInput(e.target.value)} rows="2"
-          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), send())} />
-        <button className="btn-primary" onClick={send} disabled={!input.trim() || streaming}>→</button>
-      </div>
+
       <style>{`
-        .ask { display: flex; flex-direction: column; gap: 10px; height: 100%; }
-        .ask-feed { flex: 1; display: flex; flex-direction: column; gap: 8px; min-height: 160px; max-height: 360px; overflow-y: auto; padding-right: 4px; }
-        .ask-bubble { max-width: 85%; padding: 8px 12px; border-radius: 12px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
-        .ask-bubble.user { align-self: flex-end; background: var(--accent); color: #0b0c0d; border-bottom-right-radius: 3px; }
-        .ask-bubble.assistant { align-self: flex-start; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); border-bottom-left-radius: 3px; }
-        .ask-suggested { display: flex; flex-wrap: wrap; gap: 4px; }
-        .ask-input { display: flex; gap: 6px; }
-        .ask-input textarea { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-ui); font-size: 13px; padding: 8px 10px; resize: none; outline: none; }
-        .ask-input textarea:focus { border-color: var(--accent); }
-        .ask-input .btn-primary { width: 38px; padding: 0; font-size: 16px; }
-        .chip { background: var(--surface-2); border: 1px solid var(--border); border-radius: 99px; padding: 3px 9px; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); cursor: pointer; transition: all 0.12s; }
-        .chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-muted); }
+        .chat { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+        .chat-feed { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+        .chat-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; color: var(--text-dim); }
+        .chat-empty-icon { opacity: 0.3; }
+        .chat-empty-text { font-size: 12px; line-height: 1.6; font-family: var(--font-serif); font-style: italic; max-width: 200px; margin: 0; }
+        .chat-bubble { max-width: 90%; padding: 8px 12px; border-radius: 12px; font-size: 13px; line-height: 1.55; white-space: pre-wrap; font-family: var(--font-serif); }
+        .chat-bubble.user { align-self: flex-end; background: var(--accent); color: #0b0c0d; border-bottom-right-radius: 3px; font-family: var(--font-ui); }
+        .chat-bubble.assistant { align-self: flex-start; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); border-bottom-left-radius: 3px; }
         .typing-dots { display: inline-flex; gap: 3px; align-items: center; }
         .typing-dots span { width: 5px; height: 5px; border-radius: 50%; background: var(--text-dim); animation: td-bounce 1.2s infinite; }
         .typing-dots span:nth-child(2) { animation-delay: 0.15s; }
         .typing-dots span:nth-child(3) { animation-delay: 0.3s; }
         @keyframes td-bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.5; } 30% { transform: translateY(-4px); opacity: 1; } }
+        .chat-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 14px; border-top: 1px solid var(--border); flex-shrink: 0; }
+        .chip { background: var(--surface-2); border: 1px solid var(--border); border-radius: 99px; padding: 3px 9px; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); cursor: pointer; transition: all 0.12s; }
+        .chip:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: var(--accent-muted); }
+        .chip:disabled { opacity: 0.4; cursor: default; }
+        .chat-input-row { display: flex; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--border); flex-shrink: 0; background: var(--bg-2); }
+        .chat-ta { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-ui); font-size: 13px; padding: 8px 10px; resize: none; outline: none; line-height: 1.4; transition: border-color 0.15s; }
+        .chat-ta:focus { border-color: var(--accent); }
+        .chat-send { width: 38px; height: 38px; align-self: flex-end; background: var(--accent); color: #0b0c0d; border: none; border-radius: var(--radius-sm); font-size: 16px; font-weight: 600; cursor: pointer; transition: filter 0.12s; flex-shrink: 0; }
+        .chat-send:hover:not(:disabled) { filter: brightness(1.08); }
+        .chat-send:disabled { opacity: 0.5; cursor: default; }
       `}</style>
     </div>
   );
