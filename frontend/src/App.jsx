@@ -231,11 +231,11 @@ export default function App() {
       const h = el.clientHeight;
       const narrow = w < 720;
       setStackMoves(narrow);
-      const sideReserved = narrow ? 0 : 220 + 16;
+      const sideReserved = narrow ? 0 : 220 + 16 + 200 + 16;
       const availW = w - 28 - 8 - 32 - sideReserved;
       const vReserved = 140 + 60 + 32 + (narrow ? 180 : 0);
       const availH = h - vReserved;
-      setBoardSize(Math.max(280, Math.min(560, Math.min(availW, availH))) | 0);
+      setBoardSize(Math.max(280, Math.min(700, Math.min(availW, availH))) | 0);
     };
     update();
     const ro = new ResizeObserver(update);
@@ -272,6 +272,94 @@ export default function App() {
   }
 
   const [triggerAsk, setTriggerAsk] = useState(null);
+
+  // Tutorial mode — board takeover for interactive demonstrations
+  const [tutorialMode, setTutorialMode] = useState(false);
+  const [tutorialPlan, setTutorialPlan] = useState(null);
+  const [tutorialStepIdx, setTutorialStepIdx] = useState(0);
+  const [tutorialFen, setTutorialFen] = useState(null);
+  const [awaitingUserMove, setAwaitingUserMove] = useState(false);
+  const [tutorialFeedback, setTutorialFeedback] = useState(null);
+
+  const startTutorial = useCallback((plan) => {
+    setTutorialPlan(plan);
+    setTutorialStepIdx(0);
+    setTutorialFen(fens[currentPly] ?? new Chess().fen());
+    setTutorialMode(true);
+    setAwaitingUserMove(false);
+    setTutorialFeedback(null);
+  }, [fens, currentPly]);
+
+  const exitTutorial = useCallback(() => {
+    setTutorialMode(false);
+    setTutorialPlan(null);
+    setTutorialStepIdx(0);
+    setTutorialFen(null);
+    setAwaitingUserMove(false);
+    setTutorialFeedback(null);
+  }, []);
+
+  const submitTutorialMove = useCallback((uciOrSan) => {
+    if (!tutorialMode || !awaitingUserMove || !tutorialPlan) return;
+    const step = tutorialPlan.steps[tutorialStepIdx];
+    if (!step || step.type !== "question") return;
+
+    // Normalize to UCI — SAN moves (containing letters like N/B/R/Q/K or short moves) get converted
+    let uci = uciOrSan;
+    if (uciOrSan.length < 4 || /[NBRQK]/.test(uciOrSan)) {
+      try {
+        const ch = new Chess(tutorialFen);
+        const m = ch.move(uciOrSan);
+        if (m) uci = m.from + m.to;
+      } catch (_) {}
+    }
+
+    const isCorrect = uci.slice(0, 4) === (step.correct_uci || "").slice(0, 4);
+    setAwaitingUserMove(false);
+
+    if (isCorrect) {
+      const ch = new Chess(tutorialFen);
+      try { ch.move(step.correct_uci); setTutorialFen(ch.fen()); } catch (_) {}
+      setTutorialFeedback({ correct: true, message: "Exactly right!" });
+      setTimeout(() => { setTutorialFeedback(null); setTutorialStepIdx((i) => i + 1); }, 1500);
+    } else {
+      setTutorialFeedback({ correct: false, message: `Not quite — try ${step.correct_san}. ${step.hint || ""}` });
+      setTimeout(() => { setAwaitingUserMove(true); setTutorialFeedback(null); }, 2500);
+    }
+  }, [tutorialMode, awaitingUserMove, tutorialPlan, tutorialStepIdx, tutorialFen]);
+
+  // Animate "animate" steps
+  useEffect(() => {
+    if (!tutorialMode || !tutorialPlan) return;
+    const steps = tutorialPlan.steps;
+    if (tutorialStepIdx >= steps.length) return;
+    const step = steps[tutorialStepIdx];
+    if (step.type !== "animate") return;
+    const t = setTimeout(() => {
+      const ch = new Chess(tutorialFen);
+      try { ch.move(step.uci); setTutorialFen(ch.fen()); } catch (_) {}
+      setTutorialStepIdx((i) => i + 1);
+    }, tutorialStepIdx === 0 ? 500 : 1200);
+    return () => clearTimeout(t);
+  }, [tutorialMode, tutorialStepIdx, tutorialPlan, tutorialFen]);
+
+  // Activate board interaction on "question" steps
+  useEffect(() => {
+    if (!tutorialMode || !tutorialPlan) return;
+    const step = tutorialPlan.steps[tutorialStepIdx];
+    if (step?.type === "question") setAwaitingUserMove(true);
+  }, [tutorialMode, tutorialStepIdx, tutorialPlan]);
+
+  // Show summary message when all steps are done
+  useEffect(() => {
+    if (!tutorialMode || !tutorialPlan) return;
+    if (tutorialStepIdx === tutorialPlan.steps.length && tutorialPlan.summary) {
+      setTutorialFeedback({ correct: true, message: tutorialPlan.summary, isSummary: true });
+    }
+  }, [tutorialMode, tutorialStepIdx, tutorialPlan]);
+
+  // Exit tutorial when user switches to a different game
+  useEffect(() => { if (tutorialMode) exitTutorial(); }, [activeGameId]); // eslint-disable-line
 
   function handleAskCoach(ply) {
     seek(ply);
@@ -325,9 +413,17 @@ export default function App() {
                 <div className="ws-board-area">
                   <EvalBar evalCp={blindMode ? 0 : (plyInfo?.eval ?? 0)} height={boardSize} flipped={flipped} />
                   <div className="board-stack">
-                    <Board fen={fen} flipped={flipped} size={boardSize}
-                      lastMove={lastMove} highlight={highlight} highlightKind={highlightKind}
-                      arrows={engineArrows} />
+                    <Board
+                      fen={tutorialMode ? tutorialFen : fen}
+                      flipped={flipped}
+                      size={boardSize}
+                      lastMove={tutorialMode ? null : lastMove}
+                      highlight={tutorialMode ? null : highlight}
+                      highlightKind={highlightKind}
+                      arrows={tutorialMode ? [] : engineArrows}
+                      interactive={tutorialMode && awaitingUserMove}
+                      onPieceDrop={tutorialMode && awaitingUserMove ? submitTutorialMove : null}
+                    />
                     <BoardFooter plyInfo={plyInfo} currentPly={currentPly} total={plies.length - 1}
                       onSeek={seek} setFlipped={setFlipped} flipped={flipped} />
                   </div>
@@ -336,6 +432,21 @@ export default function App() {
                   <MoveList game={game} currentPly={currentPly} onSeek={seek} blindMode={blindMode}
                     userAnnotations={annotations} onUpdateAnnotation={updateAnnotation}
                     onAskCoach={handleAskCoach} />
+                </div>
+                <div className="ws-chat-area">
+                  <CoachPanel currentPly={currentPly} plies={plies} game={game} moveData={moveData}
+                    blindMode={blindMode} gameDbId={activeGameId}
+                    triggerAsk={triggerAsk} onTriggerAskConsumed={() => setTriggerAsk(null)}
+                    currentFen={fen}
+                    playerRating={game?.youRating ?? null}
+                    tutorialMode={tutorialMode}
+                    tutorialFen={tutorialFen}
+                    currentTutorialStep={tutorialMode && tutorialPlan ? (tutorialPlan.steps[tutorialStepIdx] ?? null) : null}
+                    tutorialFeedback={tutorialFeedback}
+                    onStartTutorial={startTutorial}
+                    onExitTutorial={exitTutorial}
+                    onSubmitTutorialMove={submitTutorialMove}
+                  />
                 </div>
               </div>
             </>
@@ -347,11 +458,6 @@ export default function App() {
           )}
         </main>
 
-        <aside className="col-coach">
-          <CoachPanel currentPly={currentPly} plies={plies} game={game} moveData={moveData}
-            blindMode={blindMode} gameDbId={activeGameId}
-            triggerAsk={triggerAsk} onTriggerAskConsumed={() => setTriggerAsk(null)} />
-        </aside>
       </div>
 
       <TweaksPanel open={tweakOpen} onClose={() => setTweakOpen(false)} tweaks={tweaks} setTweaks={setTweaks} />
@@ -368,21 +474,20 @@ export default function App() {
       <style>{`
         .app-root { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
         .app-body { flex: 1; display: grid; min-height: 0; overflow: hidden; }
-        .app-body[data-layout="right"] { grid-template-columns: 260px minmax(0, 1fr) 360px; }
-        @media (max-width: 1400px) { .app-body[data-layout="right"] { grid-template-columns: 220px minmax(0, 1fr) 320px; } }
-        @media (max-width: 1200px) { .app-body[data-layout="right"] { grid-template-columns: 200px minmax(0, 1fr) 300px; } }
-        @media (max-width: 1000px) { .app-body[data-layout="right"] { grid-template-columns: 180px minmax(0, 1fr) 280px; } }
-        .app-body[data-layout="bottom"] { grid-template-columns: 280px 1fr; grid-template-rows: 1fr 280px; }
-        .app-body[data-layout="bottom"] .col-coach { grid-column: 1 / -1; border-left: none; border-top: 1px solid var(--border); max-height: 280px; }
+        .app-body[data-layout="right"] { grid-template-columns: 260px minmax(0, 1fr); }
+        @media (max-width: 1400px) { .app-body[data-layout="right"] { grid-template-columns: 220px minmax(0, 1fr); } }
+        @media (max-width: 1200px) { .app-body[data-layout="right"] { grid-template-columns: 200px minmax(0, 1fr); } }
+        @media (max-width: 1000px) { .app-body[data-layout="right"] { grid-template-columns: 180px minmax(0, 1fr); } }
+        .app-body[data-layout="bottom"] { grid-template-columns: 280px 1fr; }
         .col-games { border-right: 1px solid var(--border); background: var(--bg-2); display: flex; flex-direction: column; overflow: hidden; }
         .col-workspace { display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
-        .col-coach { min-width: 0; overflow: hidden; }
         .ws-top { padding: 14px 20px 10px; border-bottom: 1px solid var(--border); background: var(--bg-2); flex-shrink: 0; }
-        .ws-main { flex: 1; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; padding: 16px; overflow: auto; min-height: 0; align-items: start; }
+        .ws-main { flex: 1; display: grid; grid-template-columns: auto 220px 1fr; gap: 16px; padding: 16px; overflow: hidden; min-height: 0; align-items: stretch; }
         .ws-main[data-stack="true"] { grid-template-columns: 1fr; grid-auto-rows: auto; justify-items: center; }
-        .ws-board-area { display: flex; gap: 8px; align-items: flex-start; }
+        .ws-board-area { display: flex; gap: 8px; align-items: flex-start; align-self: start; }
         .board-stack { display: flex; flex-direction: column; gap: 10px; }
-        .ws-moves-area { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+        .ws-moves-area { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+        .ws-chat-area { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
         .ws-loading { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text-dim); font-size: 13px; }
         .ws-spinner { width: 24px; height: 24px; border: 2px solid var(--border-2); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }

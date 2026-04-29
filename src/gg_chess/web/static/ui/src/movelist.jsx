@@ -67,7 +67,8 @@ function MoveList({ game, currentPly, onSeek, blindMode }) {
           border-radius: var(--radius);
           font-family: var(--font-mono);
           font-size: 13px;
-          max-height: 100%;
+          flex: 1;
+          min-height: 0;
           overflow-y: auto;
           align-content: start;
         }

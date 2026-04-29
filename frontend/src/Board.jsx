@@ -67,6 +67,8 @@ export default function Board({
   showCoords = true,
   onSquareClick = null,
   selectedSquare = null,
+  interactive = false,
+  onPieceDrop = null,
 }) {
   const customSquareStyles = useMemo(
     () => buildSquareStyles({ lastMove, selectedSquare, highlight, highlightKind }),
@@ -76,7 +78,10 @@ export default function Board({
   const customArrows = useMemo(() => buildCustomArrows(arrows), [arrows]);
 
   return (
-    <div className="board-root" style={{ position: "relative", width: size, height: size }}>
+    <div className="board-root" style={{
+      position: "relative", width: size, height: size,
+      ...(interactive ? { outline: "2px solid var(--accent)", outlineOffset: "3px", borderRadius: "var(--radius)" } : {}),
+    }}>
       <Chessboard options={{
         position: fen,
         boardOrientation: flipped ? "black" : "white",
@@ -87,8 +92,11 @@ export default function Board({
         lightSquareStyle: { backgroundColor: resolveCSSVar("--square-light") },
         showNotation: showCoords,
         onSquareClick: onSquareClick ? ({ square }) => onSquareClick(square) : undefined,
-        allowDragging: false,
-        animationDurationInMs: 150,
+        allowDragging: interactive,
+        onPieceDrop: interactive && onPieceDrop
+          ? ({ sourceSquare, targetSquare }) => { onPieceDrop(sourceSquare + targetSquare); return true; }
+          : undefined,
+        animationDurationInMs: 250,
       }} />
       <style>{`
         .board-root {

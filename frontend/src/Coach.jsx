@@ -7,6 +7,10 @@ export default function CoachPanel({
   currentPly, plies, game, moveData,
   blindMode, gameDbId,
   triggerAsk, onTriggerAskConsumed,
+  currentFen,
+  playerRating,
+  tutorialMode, tutorialFen, currentTutorialStep, tutorialFeedback,
+  onStartTutorial, onExitTutorial, onSubmitTutorialMove,
 }) {
   const plyInfo = plies[currentPly];
   const moveDetails = moveData;
@@ -38,7 +42,7 @@ export default function CoachPanel({
   // External trigger from "Ask coach about this" in context menu
   useEffect(() => {
     if (!triggerAsk) return;
-    lastAutoMsgPly.current = currentPly; // suppress proactive msg for this ply
+    lastAutoMsgPly.current = currentPly;
     const q = triggerAsk.question;
     setMessages((m) => [...m, { role: "user", text: q }, { role: "assistant", text: "" }]);
     setStreaming(true);
@@ -46,16 +50,25 @@ export default function CoachPanel({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        fen: triggerAsk.fen || "",
+        fen: triggerAsk.fen || currentFen || "",
         player_move: triggerAsk.playerMoveUci || "",
         best_move: triggerAsk.bestMoveUci || "",
         eval_drop_cp: triggerAsk.evalDrop || 0,
         concept_name: triggerAsk.conceptName || "",
+        rating: parseInt(playerRating) || 1200,
         question: q,
       }),
     }).then((res) => {
-      readSse(res,
-        ({ text }) => {
+      readTeachSse(res,
+        (plan) => {
+          onStartTutorial?.(plan);
+          setMessages((m) => {
+            const copy = [...m];
+            copy[copy.length - 1] = { role: "assistant", text: "", type: "tutorial-active", plan };
+            return copy;
+          });
+        },
+        (text) => {
           if (text) setMessages((m) => {
             const copy = [...m];
             copy[copy.length - 1] = { role: "assistant", text: copy[copy.length - 1].text + text };
@@ -70,7 +83,7 @@ export default function CoachPanel({
 
   return (
     <div className="cp-root">
-      <CoachHeader plyInfo={plyInfo} moveDetails={moveDetails} blindMode={blindMode} />
+      <CoachHeader plyInfo={plyInfo} moveDetails={moveDetails} blindMode={blindMode} tutorialMode={tutorialMode} />
       <PositionStrip
         plyInfo={plyInfo}
         moveDetails={moveDetails}
@@ -87,6 +100,15 @@ export default function CoachPanel({
         moveDetails={moveDetails}
         gameDbId={gameDbId}
         blindMode={blindMode}
+        currentFen={currentFen}
+        playerRating={playerRating}
+        tutorialMode={tutorialMode}
+        tutorialFen={tutorialFen}
+        currentTutorialStep={currentTutorialStep}
+        tutorialFeedback={tutorialFeedback}
+        onStartTutorial={onStartTutorial}
+        onExitTutorial={onExitTutorial}
+        onSubmitTutorialMove={onSubmitTutorialMove}
       />
       <style>{`
         .cp-root { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--surface); border-left: 1px solid var(--border); }
@@ -95,6 +117,7 @@ export default function CoachPanel({
   );
 }
 
+// SSE reader for hint/compare endpoints (old format: {text: "..."})
 function readSse(response, onChunk, onDone) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -114,7 +137,31 @@ function readSse(response, onChunk, onDone) {
   pump();
 }
 
-function CoachHeader({ plyInfo, moveDetails, blindMode }) {
+// SSE reader for /api/ask (new format: {type: "text"|"plan", ...})
+function readTeachSse(response, onPlan, onText, onDone) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  function pump() {
+    reader.read().then(({ done, value }) => {
+      if (done) { onDone(); return; }
+      const raw = decoder.decode(value, { stream: true });
+      for (const line of raw.split("\n")) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (data === "[DONE]") { onDone(); return; }
+        try {
+          const ev = JSON.parse(data);
+          if (ev.type === "plan") onPlan(ev.plan);
+          else if (ev.type === "text" && ev.text) onText(ev.text);
+        } catch (_) {}
+      }
+      pump();
+    }).catch(onDone);
+  }
+  pump();
+}
+
+function CoachHeader({ plyInfo, moveDetails, blindMode, tutorialMode }) {
   return (
     <div className="cph">
       <div className="cph-left">
@@ -128,10 +175,14 @@ function CoachHeader({ plyInfo, moveDetails, blindMode }) {
         </div>
         <div>
           <div className="cph-name">gg <span className="cph-nameAccent">coach</span></div>
-          <div className="cph-mode">{blindMode ? "Blind mode · engine hidden" : "Review mode · engine revealed"}</div>
+          <div className="cph-mode">
+            {tutorialMode
+              ? "Tutorial mode · board active"
+              : blindMode ? "Blind mode · engine hidden" : "Review mode · engine revealed"}
+          </div>
         </div>
       </div>
-      {plyInfo?.san && (
+      {!tutorialMode && plyInfo?.san && (
         <div className="cph-context">
           <span className="cph-move">{plyInfo.moveNo}{plyInfo.color === "w" ? "." : "…"} {plyInfo.san}</span>
           {moveDetails?.isCritical && !blindMode && (
@@ -212,7 +263,13 @@ function PositionStrip({ plyInfo, moveDetails, blindMode, expanded, onToggle }) 
   );
 }
 
-function ChatPanel({ messages, setMessages, streaming, setStreaming, plyInfo, moveDetails, gameDbId, blindMode }) {
+function ChatPanel({
+  messages, setMessages, streaming, setStreaming,
+  plyInfo, moveDetails, gameDbId, blindMode,
+  currentFen,
+  playerRating, tutorialMode, tutorialFen, currentTutorialStep, tutorialFeedback,
+  onStartTutorial, onExitTutorial, onSubmitTutorialMove,
+}) {
   const [input, setInput] = useState("");
   const feedRef = useRef(null);
 
@@ -239,15 +296,27 @@ function ChatPanel({ messages, setMessages, streaming, setStreaming, plyInfo, mo
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        fen: moveDetails?.fenBefore || "",
+        fen: moveDetails?.fenBefore || currentFen || "",
         player_move: moveDetails?.playerMoveUci || "",
         best_move: moveDetails?.bestMoveUci || "",
         eval_drop_cp: moveDetails?.evalDrop || 0,
         concept_name: moveDetails?.conceptName || "",
+        rating: parseInt(playerRating) || 1200,
         question: q,
       }),
     }).then((res) => {
-      readSse(res, ({ text }) => { if (text) appendToLast(text); }, () => setStreaming(false));
+      readTeachSse(res,
+        (plan) => {
+          onStartTutorial?.(plan);
+          setMessages((m) => {
+            const copy = [...m];
+            copy[copy.length - 1] = { role: "assistant", text: "", type: "tutorial-active", plan };
+            return copy;
+          });
+        },
+        (text) => { if (text) appendToLast(text); },
+        () => setStreaming(false)
+      );
     }).catch(() => {
       setMessages((m) => {
         const copy = [...m];
@@ -293,6 +362,7 @@ function ChatPanel({ messages, setMessages, streaming, setStreaming, plyInfo, mo
 
   const isCritical = moveDetails?.isCritical;
   const hasBestLine = !blindMode && moveDetails?.bestLine?.length > 0;
+  const isQuestionStep = tutorialMode && currentTutorialStep?.type === "question";
 
   return (
     <div className="chat">
@@ -314,11 +384,45 @@ function ChatPanel({ messages, setMessages, streaming, setStreaming, plyInfo, mo
               : (m.role === "assistant" && streaming && i === messages.length - 1)
                 ? <span className="typing-dots"><span /><span /><span /></span>
                 : null}
+            {m.type === "tutorial-active" && !streaming && (
+              <button className="chip chip-exit" onClick={onExitTutorial}>
+                Exit tutorial
+              </button>
+            )}
           </div>
         ))}
       </div>
 
-      {isCritical && (
+      {/* Tutorial question participation chips */}
+      {isQuestionStep && (
+        <div className="chat-chips">
+          <span className="chip-label">Your turn:</span>
+          {currentTutorialStep.participation_mode === "choice"
+            ? currentTutorialStep.choices?.map((san) => (
+                <button key={san} className="chip chip-primary" disabled={streaming}
+                  onClick={() => onSubmitTutorialMove?.(san)}>
+                  {san}
+                </button>
+              ))
+            : <span className="chip-freeplay">Find the move on the board</span>
+          }
+          {tutorialFeedback && (
+            <span className="chip-feedback" style={{ color: tutorialFeedback.correct ? "var(--accent)" : "var(--warn)" }}>
+              {tutorialFeedback.message}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Tutorial question prompt */}
+      {isQuestionStep && currentTutorialStep.prompt && (
+        <div className="tutorial-prompt">
+          {currentTutorialStep.prompt}
+        </div>
+      )}
+
+      {/* Regular position chips */}
+      {!tutorialMode && isCritical && (
         <div className="chat-chips">
           <button className="chip" onClick={getHint} disabled={streaming}>Get a hint</button>
           {hasBestLine && (
@@ -356,10 +460,18 @@ function ChatPanel({ messages, setMessages, streaming, setStreaming, plyInfo, mo
         .typing-dots span:nth-child(2) { animation-delay: 0.15s; }
         .typing-dots span:nth-child(3) { animation-delay: 0.3s; }
         @keyframes td-bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.5; } 30% { transform: translateY(-4px); opacity: 1; } }
-        .chat-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 14px; border-top: 1px solid var(--border); flex-shrink: 0; }
+        .chat-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 14px; border-top: 1px solid var(--border); flex-shrink: 0; align-items: center; }
         .chip { background: var(--surface-2); border: 1px solid var(--border); border-radius: 99px; padding: 3px 9px; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); cursor: pointer; transition: all 0.12s; }
         .chip:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: var(--accent-muted); }
         .chip:disabled { opacity: 0.4; cursor: default; }
+        .chip-primary { border-color: var(--accent); color: var(--accent); }
+        .chip-primary:hover:not(:disabled) { background: var(--accent); color: #0b0c0d; }
+        .chip-exit { display: block; margin-top: 8px; font-family: var(--font-mono); font-size: 10px; background: none; border: 1px solid var(--border); border-radius: 99px; padding: 2px 8px; color: var(--text-dim); cursor: pointer; }
+        .chip-exit:hover { border-color: var(--text-muted); color: var(--text-muted); }
+        .chip-label { font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); padding: 3px 0; }
+        .chip-freeplay { font-size: 11px; color: var(--accent); font-family: var(--font-serif); font-style: italic; padding: 3px 4px; }
+        .chip-feedback { font-size: 11px; font-family: var(--font-serif); padding: 3px 4px; }
+        .tutorial-prompt { padding: 6px 14px 8px; font-size: 12px; color: var(--text); font-family: var(--font-serif); font-style: italic; line-height: 1.5; border-top: 1px solid var(--border); flex-shrink: 0; background: var(--accent-muted); }
         .chat-input-row { display: flex; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--border); flex-shrink: 0; background: var(--bg-2); }
         .chat-ta { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-ui); font-size: 13px; padding: 8px 10px; resize: none; outline: none; line-height: 1.4; transition: border-color 0.15s; }
         .chat-ta:focus { border-color: var(--accent); }

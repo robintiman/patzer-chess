@@ -216,12 +216,12 @@ function App() {
       const narrow = w < 720;
       setStackMoves(narrow);
       // Width budget: eval bar(28) + gap(8) + padding(32) + (moves: 220 if side-by-side, else 0)
-      const sideReserved = narrow ? 0 : 220 + 16;
+      const sideReserved = narrow ? 0 : 160 + 16;
       const availW = w - 28 - 8 - 32 - sideReserved;
       // Height budget: top bar ~140, footer ~60, padding 32, moves(160 if stacked)
       const vReserved = 140 + 60 + 32 + (narrow ? 180 : 0);
       const availH = h - vReserved;
-      const s = Math.max(280, Math.min(560, Math.min(availW, availH)));
+      const s = Math.max(280, Math.min(680, Math.min(availW, availH)));
       setBoardSize(Math.floor(s));
     };
     update();
@@ -436,12 +436,12 @@ function App() {
         .ws-main {
           flex: 1;
           display: grid;
-          grid-template-columns: auto minmax(0, 1fr);
+          grid-template-columns: auto 160px;
           gap: 16px;
           padding: 16px;
           overflow: auto;
           min-height: 0;
-          align-items: start;
+          align-items: stretch;
         }
         .ws-main[data-stack="true"] {
           grid-template-columns: 1fr;
@@ -463,6 +463,7 @@ function App() {
           flex-direction: column;
           min-width: 0;
           min-height: 0;
+          overflow: hidden;
         }
         .fab-tweaks {
           position: fixed;

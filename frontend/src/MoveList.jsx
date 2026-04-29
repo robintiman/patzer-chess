@@ -147,7 +147,7 @@ export default function MoveList({ game, currentPly, onSeek, blindMode, userAnno
           gap: 2px 10px; padding: 10px 12px;
           background: var(--surface); border: 1px solid var(--border);
           border-radius: var(--radius); font-family: var(--font-mono); font-size: 13px;
-          max-height: 100%; overflow-y: auto; align-content: start;
+          flex: 1; min-height: 0; overflow-y: auto; align-content: start; height: 100%;
         }
         .ml-row { display: contents; }
         .ml-num { color: var(--text-dim); font-weight: 500; padding: 3px 0; user-select: none; text-align: right; min-width: 28px; }

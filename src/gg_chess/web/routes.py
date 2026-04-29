@@ -8,6 +8,7 @@ import chess.engine
 from flask import Blueprint, Response, current_app, g, jsonify, request, stream_with_context
 
 from ..analysis.llm import chat_stream
+from ..analysis.teach import teach_position
 from ..config import STOCKFISH_PATH
 from ..db import init_db
 
@@ -541,25 +542,41 @@ def ask():
     eval_drop_cp = data.get("eval_drop_cp", 0)
     concept_name = data.get("concept_name", "")
     question = data.get("question", "")
+    rating = int(data.get("rating", 1200))
 
     if not question:
         return jsonify({"error": "question is required"}), 400
 
-    prompt = f"""You are a chess coach helping a player understand their mistakes.
+    # Infer attacking color from FEN active side
+    fen_parts = fen.split(" ")
+    player_color = "white" if len(fen_parts) > 1 and fen_parts[1] == "w" else "black"
 
-Position (FEN): {fen}
-Player's move (UCI): {player_move}
-Best move (UCI): {best_move}
-Evaluation drop: {eval_drop_cp} centipawns
-Concept: {concept_name}
-
-Player's question: {question}
-
-Provide a clear, educational explanation focused on chess improvement. Be concise but thorough."""
+    # Add position context to the question so Claude has the full picture
+    context_question = question
+    if player_move or best_move or concept_name:
+        parts = []
+        if player_move:
+            parts.append(f"Player played: {player_move}")
+        if best_move:
+            parts.append(f"Best move was: {best_move}")
+        if eval_drop_cp:
+            parts.append(f"Eval drop: {eval_drop_cp}cp")
+        if concept_name:
+            parts.append(f"Pattern: {concept_name}")
+        context_question = question + "\n\n[Context: " + "; ".join(parts) + "]"
 
     def generate():
-        for text in chat_stream(prompt):
-            yield f"data: {json.dumps({'text': text})}\n\n"
+        result = teach_position(fen, context_question, player_color, rating)
+        if result["action"] == "demo":
+            plan = result["plan"]
+            yield f"data: {json.dumps({'type': 'plan', 'plan': plan})}\n\n"
+            theme = plan.get("theme", "this position")
+            for text in chat_stream(f"In one punchy sentence introduce this chess demonstration to the player: {theme}"):
+                yield f"data: {json.dumps({'type': 'text', 'text': text})}\n\n"
+        else:
+            # Yield the pre-generated text directly — don't pipe through chat_stream
+            # (chat_stream would treat it as a new prompt and generate a new response)
+            yield f"data: {json.dumps({'type': 'text', 'text': result['text']})}\n\n"
         yield "data: [DONE]\n\n"
 
     return Response(
