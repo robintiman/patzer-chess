@@ -35,3 +35,29 @@ CLAUDE_CHAT_MODEL: str = "claude-opus-4-6"               # High-quality model fo
 USE_LOCAL_MODEL: bool = os.getenv("USE_LOCAL_MODEL", "false").lower() == "true"
 LOCAL_MODEL_NAME: str = os.getenv("LOCAL_MODEL_NAME", "qwen3:30b")
 MULTI_PV_COUNT: int = 3
+
+# ── Coach / retrieval assets ──────────────────────────────────────────────────
+
+# Polyglot opening book (.bin). See retrieval/openings.py.
+OPENING_BOOK_PATH: Path = Path(
+    os.getenv("OPENING_BOOK_PATH", "./data/book.bin")
+)
+
+# Syzygy tablebase directory (contains .rtbw / .rtbz files). Empty = disabled.
+TABLEBASE_PATH: str = os.getenv("TABLEBASE_PATH", "")
+
+# Lessons + endgame-drill JSON.
+LESSONS_DIR: Path = Path(os.getenv("LESSONS_DIR", "./data/lessons"))
+ENDGAME_DRILLS_DIR: Path = Path(os.getenv("ENDGAME_DRILLS_DIR", "./data/endgames"))
+
+# ── Vocabulary thresholds (cp) ────────────────────────────────────────────────
+# Used by move_judge.classify_move and by the coach system prompt to ground
+# adjectives like "winning", "decisive", "blunder" in concrete numbers.
+EVAL_DECISIVE_CP: int = 500
+EVAL_WINNING_CP:  int = 200
+EVAL_EQUAL_CP:    int = 50
+
+CP_LOSS_BLUNDER:    int = 200
+CP_LOSS_MISTAKE:    int = 100
+CP_LOSS_INACCURACY: int = 50
+CP_LOSS_GOOD:       int = 20
