@@ -161,6 +161,7 @@ export default function App() {
         const plies = flattenPlies(game);
         const criticalPlies = plies.map((p, i) => (p.isCritical ? i : -1)).filter((i) => i >= 0);
         setGameDetail({ game, plies, criticalPlies });
+        setFlipped(game.youColor === "black");
         setCurrentPly(0);
         setAnnotations({});
         setDetailLoading(false);

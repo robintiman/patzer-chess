@@ -1,5 +1,6 @@
 import json
 import re
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -7,10 +8,12 @@ import chess
 import chess.engine
 from flask import Blueprint, Response, current_app, g, jsonify, request, stream_with_context
 
+from ..analysis.engine import analyse_game, sweep_game_evals
 from ..analysis.llm import chat_stream
 from ..analysis.teach import teach_position
 from ..config import STOCKFISH_PATH
 from ..db import init_db
+from ..ingestion.parser import parse_pgn
 
 bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -197,11 +200,6 @@ def analyse_game_route(game_db_id: int):
     db_path: Path = current_app.config["DB_PATH"]
 
     def generate():
-        import sqlite3
-
-        from ..analysis.engine import analyse_game, sweep_game_evals
-        from ..analysis.tactics import identify_tactic
-        from ..ingestion.parser import parse_pgn
 
         def send(event_type, **kwargs):
             return f"data: {json.dumps({'type': event_type, **kwargs})}\n\n"
@@ -225,58 +223,48 @@ def analyse_game_route(game_db_id: int):
                 yield send("error", message="Could not parse PGN")
                 return
 
-            yield send("status", message="Running Stockfish analysis…")
-            errors = []
-            try:
-                for event in analyse_game(game):
-                    if event["type"] == "progress":
-                        yield send("analyzing_move",
-                                   half_move_index=event["half_move_index"],
-                                   san=event["san"])
-                    elif event["type"] == "done":
-                        errors = event["errors"]
-            except Exception as e:
-                yield send("error", message=f"Engine error: {e}")
-                return
+            cached = db.execute(
+                "SELECT id FROM positions WHERE game_id = ? LIMIT 1", (game_db_id,)
+            ).fetchone()
 
-            yield send("status", message=f"Found {len(errors)} errors — identifying concepts…")
-
-            db.execute("DELETE FROM positions WHERE game_id = ?", (game_db_id,))
-
-            def call_concept(err):
+            if cached is not None:
+                error_count = db.execute(
+                    "SELECT COUNT(*) FROM positions WHERE game_id = ?", (game_db_id,)
+                ).fetchone()[0]
+                yield send("status", message=f"Already analysed — loaded {error_count} errors from cache.")
+            else:
+                yield send("status", message="Running engine analysis…")
+                errors = []
                 try:
-                    return err, identify_tactic(err, game)
+                    for event in analyse_game(game):
+                        if event["type"] == "progress":
+                            yield send("analyzing_move",
+                                       half_move_index=event["half_move_index"],
+                                       san=event["san"])
+                        elif event["type"] == "done":
+                            errors = event["errors"]
                 except Exception as e:
-                    import traceback
-                    print(f"[identify_tactic] error at move {err.move_number}: {e}")
-                    traceback.print_exc()
-                    return err, ("", "")
+                    yield send("error", message=f"Engine error: {e}")
+                    return
 
-            with ThreadPoolExecutor(max_workers=3) as pool:
-                future_to_err = {pool.submit(call_concept, err): err for err in errors}
-                for future in as_completed(future_to_err):
-                    err, (concept_name, concept_explanation) = future.result()
-                    db.execute(
-                        """INSERT INTO positions
-                           (game_id, move_number, fen_before, fen_after, player_move, best_move,
-                            eval_drop_cp, win_pct_drop, move_classification,
-                            pv_san, alt_pvs_san, concept_name, concept_explanation)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (game_db_id, err.move_number, err.fen_before, err.fen_after,
-                         err.player_move, err.best_move, err.eval_drop_cp,
-                         err.win_pct_drop, err.move_classification,
-                         " ".join(err.pv_san), json.dumps(err.alt_pvs_san),
-                         concept_name, concept_explanation),
-                    )
-                    yield send("concept_identified",
-                               move_number=err.move_number,
-                               half_move_index=err.half_move_index,
-                               player_move=err.player_move,
-                               fen_before=err.fen_before,
-                               eval_drop_cp=err.eval_drop_cp,
-                               win_pct_drop=err.win_pct_drop,
-                               move_classification=err.move_classification,
-                               concept_name=concept_name)
+                yield send("status", message=f"Found {len(errors)} errors — saving results…")
+                db.executemany(
+                    """INSERT INTO positions
+                       (game_id, move_number, fen_before, fen_after, player_move, best_move,
+                        eval_drop_cp, win_pct_drop, move_classification, pv_san, alt_pvs_san,
+                        concept_name, concept_explanation)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '')""",
+                    [
+                        (
+                            game_db_id, e.move_number, e.fen_before, e.fen_after,
+                            e.player_move, e.best_move, e.eval_drop_cp, e.win_pct_drop,
+                            e.move_classification,
+                            json.dumps(e.pv_san), json.dumps(e.alt_pvs_san),
+                        )
+                        for e in errors
+                    ],
+                )
+                error_count = len(errors)
 
             db.execute("UPDATE games SET analysed = 1 WHERE id = ?", (game_db_id,))
             db.commit()
@@ -293,7 +281,7 @@ def analyse_game_route(game_db_id: int):
             from ..analysis.interest import score_game_from_db
             score_game_from_db(db, game_db_id)
 
-            yield send("done", error_count=len(errors))
+            yield send("done", error_count=error_count)
         except Exception as e:
             yield send("error", message=str(e))
         finally:
@@ -531,6 +519,100 @@ def compare_review(game_db_id: int):
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ── Coach mode endpoints (skeletons) ──────────────────────────────────────────
+# These dispatch to gg_chess.coach.router.handle_turn. Wire up as the coach
+# package implementation lands. See docs/COACH_IMPLEMENTATION.md.
+
+
+def _coach_dispatch(mode: str):
+    """Common shape: read JSON body, call coach.router, return envelope."""
+    from ..coach.router import handle_turn  # imported lazily until impl exists
+    data = request.get_json(force=True)
+    user_id = data.get("user_id", "")
+    if not user_id:
+        return jsonify({"error": "user_id required"}), 400
+    db = get_db()
+    try:
+        result = handle_turn(db, user_id, mode, data.get("payload", {}))
+    except NotImplementedError:
+        return jsonify({"error": f"coach mode '{mode}' not yet implemented"}), 501
+    return jsonify(result)
+
+
+@bp.post("/coach/qa")
+def coach_qa():
+    """Body: {user_id, payload: {fen, question}}"""
+    return _coach_dispatch("qa")
+
+
+@bp.post("/coach/review")
+def coach_review():
+    """Body: {user_id, payload: {game_db_id, focus_count?}}"""
+    return _coach_dispatch("review")
+
+
+@bp.post("/coach/puzzle")
+def coach_puzzle():
+    """Body: {user_id, payload: {sub_action: 'next'|'guess'|'hint'|'give_up', ...}}"""
+    return _coach_dispatch("puzzle")
+
+
+@bp.post("/coach/lesson")
+def coach_lesson():
+    """Body: {user_id, payload: {sub_action: 'list'|'start'|'next'|'answer', lesson_id?, answer?}}"""
+    return _coach_dispatch("lesson")
+
+
+@bp.post("/coach/spar")
+def coach_spar():
+    """Body: {user_id, payload: {sub_action: 'new'|'move'|'resign', start_fen?, target_elo?, move?}}"""
+    return _coach_dispatch("spar")
+
+
+@bp.post("/coach/opening")
+def coach_opening():
+    """Body: {user_id, payload: {sub_action: 'drill_next'|'drill_move'|'edit'|'list', ...}}"""
+    return _coach_dispatch("opening")
+
+
+@bp.post("/coach/endgame")
+def coach_endgame():
+    """Body: {user_id, payload: {sub_action: 'start'|'move'|'give_up', drill_id?, move?}}"""
+    return _coach_dispatch("endgame")
+
+
+@bp.post("/coach/classify-move")
+def classify_move_route():
+    """Direct (no-LLM) move judgment.
+
+    Body: {fen, move, depth?}
+    Returns the dict from analysis.move_judge.classify_move.
+    """
+    from ..analysis import tools as chess_tools
+    from ..analysis.move_judge import classify_move
+    from ..config import STOCKFISH_HASH, STOCKFISH_THREADS
+
+    data = request.get_json(force=True)
+    fen = data.get("fen", "")
+    move = data.get("move", "")
+    depth = int(data.get("depth", 14))
+    if not fen or not move:
+        return jsonify({"error": "fen and move required"}), 400
+
+    try:
+        with chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH) as engine:
+            engine.configure({"Threads": STOCKFISH_THREADS, "Hash": STOCKFISH_HASH})
+            chess_tools.set_engine(engine)
+            try:
+                result = classify_move(fen, move, depth=depth)
+            finally:
+                chess_tools.set_engine(None)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify(result)
 
 
 @bp.post("/ask")

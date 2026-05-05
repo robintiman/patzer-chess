@@ -137,19 +137,34 @@ def _tool_use_loop_ollama(
     ]
 
     for iteration in range(max_iters):
-        response = ollama.chat(
+        stream = ollama.chat(
             model=LOCAL_MODEL_NAME,
             messages=messages,
             tools=ollama_tools,
-            think=False,
+            stream=True,
+            think=True,
         )
-        print(f"[{log_prefix}] iter={iteration} done_reason={response.done_reason}")
 
-        content = response.message.content or ""
+        thinking = ""
+        content = ""
+        tool_calls = []
+        done_reason = None
+
+        for chunk in stream:
+            if chunk.message.thinking:
+                thinking += chunk.message.thinking
+                print(chunk.message.thinking, end="", flush=True)
+            if chunk.message.content:
+                content += chunk.message.content
+            if chunk.message.tool_calls:
+                tool_calls.extend(chunk.message.tool_calls)
+            if chunk.done_reason:
+                done_reason = chunk.done_reason
+
+        print(f"[{log_prefix}] iter={iteration} done_reason={done_reason}")
         if content.strip():
-            print(f"[{log_prefix}] reasoning: {content.strip()}")
+            print(f"[{log_prefix}] content: {content.strip()}")
 
-        tool_calls = response.message.tool_calls or []
         if not tool_calls:
             break
 
@@ -158,7 +173,7 @@ def _tool_use_loop_ollama(
             print(f"[{log_prefix}] {terminal_tool}: {terminal.function.arguments!r}")
             return terminal.function.arguments
 
-        messages.append(response.message)
+        messages.append({"role": "assistant", "thinking": thinking, "content": content, "tool_calls": tool_calls})
         for tc in tool_calls:
             result = tool_executor(tc.function.name, tc.function.arguments)
             messages.append({"role": "tool", "tool_name": tc.function.name, "content": json.dumps(result)})
