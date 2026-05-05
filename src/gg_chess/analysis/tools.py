@@ -6,6 +6,8 @@ Call set_engine() before running any tool loop that needs Stockfish.
 """
 from __future__ import annotations
 
+import dataclasses
+
 import chess
 import chess.engine
 
@@ -333,11 +335,15 @@ _TOOL_MAP = {
 
 
 def execute_tool(name: str, args: dict) -> dict:
-    """Dispatch a tool call by name."""
+    """Dispatch a tool call by name. Normalises dataclass results to dicts
+    so the JSON serialisation step in the LLM loop works uniformly."""
     fn = _TOOL_MAP.get(name)
     if fn is None:
         return {"error": f"Unknown tool: {name}"}
-    return fn(**args)
+    result = fn(**args)
+    if dataclasses.is_dataclass(result) and not isinstance(result, type):
+        return dataclasses.asdict(result)
+    return result
 
 
 # ── Ollama tool lists (functions → auto-schema) ────────────────────────────────

@@ -12,11 +12,43 @@ codebase agrees on what a "blunder" is.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 import chess
 import chess.engine
 
 from . import tools as _tools
 from .engine import _classify_drop, cp_to_win_pct
+
+
+@dataclass(frozen=True)
+class ClassifyMoveResult:
+    move_san: str
+    move_uci: str
+    is_legal: bool
+    eval_before_cp: int                 # mover POV (positive = mover is winning)
+    eval_after_cp: int | None           # same POV; None if illegal
+    cp_loss: int | None                 # max(0, before - after); None if illegal
+    win_pct_drop: float | None          # Lichess sigmoid drop, 0-100
+    engine_best_san: str
+    engine_best_uci: str
+    engine_pv_san: list[str]            # up to 8 plies
+    classification: str                 # "best"|"excellent"|"good"|"inaccuracy"|"mistake"|"blunder"|"illegal"
+    is_only_move: bool                  # second-best PV is >= 150 cp worse
+
+
+@dataclass(frozen=True)
+class RefuteResult:
+    move_san: str                       # the move being refuted
+    move_uci: str
+    is_legal: bool
+    fen_after: str | None               # None if illegal
+    terminal: str | None                # "checkmate"|"stalemate"|"insufficient_material"|None
+    refutation_san: str | None          # opponent's best reply; None if illegal/terminal
+    refutation_uci: str | None
+    refutation_pv_san: list[str] = field(default_factory=list)  # up to 4 plies
+    tactical_motif: str | None = None   # tag from tactics.find_tactics if applicable
+    eval_after_refutation_cp: int | None = None  # mover's POV
 
 CLASS_BEST = "best"
 CLASS_EXCELLENT = "excellent"   # win_pct_drop < 2
@@ -32,24 +64,8 @@ _ONLY_MOVE_GAP_CP = 150         # second-best is this much worse → it's the on
 
 # ── Tools ──────────────────────────────────────────────────────────────────────
 
-def classify_move(fen: str, move: str, depth: int = 14) -> dict:
+def classify_move(fen: str, move: str, depth: int = 14) -> ClassifyMoveResult:
     """Grade a single move against Stockfish's preferred line.
-
-    Returns:
-        {
-          "move_san":      str,
-          "move_uci":      str,
-          "is_legal":      bool,
-          "eval_before_cp": int,           # from MOVER POV (positive = mover is winning)
-          "eval_after_cp":  int | null,    # same POV; null if move is illegal
-          "cp_loss":        int | null,    # max(0, eval_before - eval_after)
-          "win_pct_drop":   float | null,  # Lichess sigmoid drop, 0-100
-          "engine_best_san":  str,
-          "engine_best_uci":  str,
-          "engine_pv_san":  [str, ...],    # up to 8 plies
-          "classification": "best" | "excellent" | "good" | "inaccuracy" | "mistake" | "blunder" | "illegal",
-          "is_only_move":  bool,           # second-best PV is >= 150 cp worse
-        }
 
     Args:
         fen: FEN before the move.
@@ -90,18 +106,18 @@ def classify_move(fen: str, move: str, depth: int = 14) -> dict:
     engine_pv_san = _pv_to_san(pre_board, engine_pv[:8])
 
     if not is_legal:
-        return {
-            "move_san": move_san, "move_uci": move_uci,
-            "is_legal": False,
-            "eval_before_cp": eval_before_mover,
-            "eval_after_cp": None,
-            "cp_loss": None, "win_pct_drop": None,
-            "engine_best_san": engine_best_san,
-            "engine_best_uci": engine_best_uci,
-            "engine_pv_san": engine_pv_san,
-            "classification": CLASS_ILLEGAL,
-            "is_only_move": is_only_move,
-        }
+        return ClassifyMoveResult(
+            move_san=move_san, move_uci=move_uci,
+            is_legal=False,
+            eval_before_cp=eval_before_mover,
+            eval_after_cp=None,
+            cp_loss=None, win_pct_drop=None,
+            engine_best_san=engine_best_san,
+            engine_best_uci=engine_best_uci,
+            engine_pv_san=engine_pv_san,
+            classification=CLASS_ILLEGAL,
+            is_only_move=is_only_move,
+        )
 
     board.push(chess_move)
     after = _tools._engine.analyse(board, chess.engine.Limit(depth=depth))
@@ -114,19 +130,19 @@ def classify_move(fen: str, move: str, depth: int = 14) -> dict:
     )
     classification = _classify_label(win_pct_drop, engine_best, chess_move)
 
-    return {
-        "move_san": move_san, "move_uci": move_uci,
-        "is_legal": True,
-        "eval_before_cp": eval_before_mover,
-        "eval_after_cp": eval_after_mover,
-        "cp_loss": cp_loss,
-        "win_pct_drop": win_pct_drop,
-        "engine_best_san": engine_best_san,
-        "engine_best_uci": engine_best_uci,
-        "engine_pv_san": engine_pv_san,
-        "classification": classification,
-        "is_only_move": is_only_move,
-    }
+    return ClassifyMoveResult(
+        move_san=move_san, move_uci=move_uci,
+        is_legal=True,
+        eval_before_cp=eval_before_mover,
+        eval_after_cp=eval_after_mover,
+        cp_loss=cp_loss,
+        win_pct_drop=win_pct_drop,
+        engine_best_san=engine_best_san,
+        engine_best_uci=engine_best_uci,
+        engine_pv_san=engine_pv_san,
+        classification=classification,
+        is_only_move=is_only_move,
+    )
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -191,24 +207,81 @@ def compare_candidates(fen: str, moves: list[str], depth: int = 14) -> dict:
     raise NotImplementedError
 
 
-def refute(fen: str, move: str, depth: int = 14) -> dict:
+def refute(fen: str, move: str, depth: int = 14) -> RefuteResult:
     """Find the engine's punishing reply to a (presumably bad) move.
-
-    Returns:
-        {
-          "move_san":          str,        # the move being refuted
-          "fen_after":         str,
-          "refutation_san":    str,        # opponent's best reply
-          "refutation_uci":    str,
-          "refutation_pv_san": [str,...],  # 4-8 plies showing the punishment
-          "tactical_motif":    str | null, # tag from tactics.find_tactics if applicable
-          "eval_swing_cp":     int,        # eval before vs eval after refutation, side-to-move POV
-        }
 
     Use when explaining "why was my move bad?" — the answer is almost
     always a concrete forcing sequence, not an abstract weakness.
     """
-    raise NotImplementedError
+    if _tools._engine is None:
+        raise RuntimeError("refute requires tools.set_engine() to have been called")
+    depth = min(int(depth), _MAX_DEPTH)
+    board = chess.Board(fen)
+
+    chess_move = _parse_move(board, move)
+    is_legal = chess_move is not None and chess_move in board.legal_moves
+    move_uci = chess_move.uci() if chess_move is not None else move
+    move_san = board.san(chess_move) if is_legal else move
+
+    if not is_legal:
+        return RefuteResult(
+            move_san=move_san, move_uci=move_uci,
+            is_legal=False,
+            fen_after=None, terminal=None,
+            refutation_san=None, refutation_uci=None,
+        )
+
+    sign = 1 if board.turn == chess.WHITE else -1
+    board.push(chess_move)
+    fen_after = board.fen()
+
+    if board.is_checkmate():
+        terminal = "checkmate"
+    elif board.is_stalemate():
+        terminal = "stalemate"
+    elif board.is_insufficient_material():
+        terminal = "insufficient_material"
+    else:
+        terminal = None
+
+    if terminal is not None:
+        return RefuteResult(
+            move_san=move_san, move_uci=move_uci,
+            is_legal=True,
+            fen_after=fen_after, terminal=terminal,
+            refutation_san=None, refutation_uci=None,
+        )
+
+    info = _tools._engine.analyse(board, chess.engine.Limit(depth=depth), multipv=1)
+    if isinstance(info, list):
+        info = info[0]
+    pv = info.get("pv", [])
+    refutation = pv[0] if pv else None
+    eval_after_white = info["score"].white().score(mate_score=10000) or 0
+    eval_after_mover = sign * eval_after_white
+
+    refutation_san = board.san(refutation) if refutation is not None else None
+    refutation_uci = refutation.uci() if refutation is not None else None
+    refutation_pv_san = _pv_to_san(board, pv[:4])
+
+    motif: str | None = None
+    try:
+        from .tactics import find_tactics
+        tactics_result = find_tactics(fen_after, depth)
+        motif = tactics_result.get("motif") if isinstance(tactics_result, dict) else None
+    except NotImplementedError:
+        motif = None
+
+    return RefuteResult(
+        move_san=move_san, move_uci=move_uci,
+        is_legal=True,
+        fen_after=fen_after, terminal=None,
+        refutation_san=refutation_san,
+        refutation_uci=refutation_uci,
+        refutation_pv_san=refutation_pv_san,
+        tactical_motif=motif,
+        eval_after_refutation_cp=eval_after_mover,
+    )
 
 
 def find_threats(fen: str, depth: int = 12) -> dict:

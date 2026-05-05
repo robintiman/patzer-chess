@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import re
 import sqlite3
@@ -612,7 +613,78 @@ def classify_move_route():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-    return jsonify(result)
+    return jsonify(dataclasses.asdict(result))
+
+
+@bp.post("/coach/judge-move")
+def judge_move_route():
+    """Judge a candidate move and stream a 2-3 sentence narration.
+
+    Body: {fen, move, depth?}
+    SSE frames:
+      data: {"type":"judgment","judgment":{...},"refutation":{...}|null}
+      data: {"type":"text","text":"..."}        (one or more)
+      data: [DONE]
+    """
+    from ..analysis import tools as chess_tools
+    from ..analysis.move_judge import classify_move, refute
+    from ..analysis.structure import describe_position
+    from ..config import STOCKFISH_HASH, STOCKFISH_THREADS
+
+    data = request.get_json(force=True)
+    fen = data.get("fen", "")
+    move = data.get("move", "")
+    depth = int(data.get("depth", 14))
+    if not fen or not move:
+        return jsonify({"error": "fen and move required"}), 400
+
+    try:
+        with chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH) as engine:
+            engine.configure({"Threads": STOCKFISH_THREADS, "Hash": STOCKFISH_HASH})
+            chess_tools.set_engine(engine)
+            try:
+                judgment_dc = classify_move(fen, move, depth=depth)
+                refutation_dc = None
+                if judgment_dc.classification in ("blunder", "mistake", "inaccuracy"):
+                    refutation_dc = refute(fen, move, depth=depth)
+            finally:
+                chess_tools.set_engine(None)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    judgment = dataclasses.asdict(judgment_dc)
+    refutation = dataclasses.asdict(refutation_dc) if refutation_dc is not None else None
+
+    desc = describe_position(fen)
+    system = (
+        "You are a chess coach narrating a single move.\n"
+        "GROUND-TRUTH: Only mention moves that appear verbatim in the JSON below. "
+        "Copy SAN/UCI exactly. Do not reclassify — use the label the engine returned. "
+        "Keep it to 2-3 sentences, plain prose, no headings.\n\n"
+        f"Position ({desc['to_move']} to move):\n{desc['ascii']}"
+    )
+    payload = {"judgment": judgment, "refutation": refutation}
+    prompt = (
+        "Narrate this move judgment for the player in 2-3 sentences. "
+        "Lead with the verdict (use the classification label), then explain *why* "
+        "by referencing the engine line or refutation if present. "
+        f"\n\nJSON:\n{json.dumps(payload)}"
+    )
+
+    def generate():
+        yield f"data: {json.dumps({'type': 'judgment', **payload})}\n\n"
+        for text in chat_stream(prompt, system=system):
+            yield f"data: {json.dumps({'type': 'text', 'text': text})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @bp.post("/ask")
