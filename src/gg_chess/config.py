@@ -51,13 +51,10 @@ LESSONS_DIR: Path = Path(os.getenv("LESSONS_DIR", "./data/lessons"))
 ENDGAME_DRILLS_DIR: Path = Path(os.getenv("ENDGAME_DRILLS_DIR", "./data/endgames"))
 
 # ── Vocabulary thresholds (cp) ────────────────────────────────────────────────
-# Used by move_judge.classify_move and by the coach system prompt to ground
-# adjectives like "winning", "decisive", "blunder" in concrete numbers.
+# Used by the coach system prompt to ground adjectives like "winning" /
+# "decisive" / "equal" in concrete numbers. Move classification thresholds
+# (blunder/mistake/inaccuracy) live above as *_WIN_PCT_THRESHOLD — Lichess
+# methodology, used everywhere else in the codebase.
 EVAL_DECISIVE_CP: int = 500
 EVAL_WINNING_CP:  int = 200
 EVAL_EQUAL_CP:    int = 50
-
-CP_LOSS_BLUNDER:    int = 200
-CP_LOSS_MISTAKE:    int = 100
-CP_LOSS_INACCURACY: int = 50
-CP_LOSS_GOOD:       int = 20

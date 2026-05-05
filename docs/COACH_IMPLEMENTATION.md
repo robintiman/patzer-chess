@@ -4,6 +4,31 @@ This document is the build context for the general AI chess coach. It assumes
 you have read `src/gg_chess/analysis/teach.py` (the existing tool-use loop)
 and `src/gg_chess/analysis/tools.py` (the existing tool registry).
 
+## Status
+
+| Wave | Item | Status |
+|---|---|---|
+| 0 | Skeleton (all stubs, schema, config, route stubs) | ✅ shipped — `138785b` |
+| 1 | `structure.describe_position` | ✅ shipped + tested |
+| 2 | `move_judge.classify_move` | ✅ shipped + tested |
+| 2 | `/api/coach/classify-move` route (engine wiring) | ✅ shipped |
+| 2 | `teach.py` system-prompt prefix injection | ✅ shipped |
+| — | Cleanup: remove redundant `CP_LOSS_*` constants | ✅ shipped |
+| 1 | `pawn_structure`, `king_safety`, `piece_activity`, `material_imbalance` | stub |
+| 2 | `compare_candidates`, `refute`, `find_threats`, `mate_search` | stub |
+| 3 | `coach/sanitizer.verify` | stub |
+| 4 | `tactics.find_tactics` + retrieval (puzzles/openings/tablebase) | stub |
+| 5 | `coach/student.*` | stub |
+| 6 | `coach/router` + `coach/modes/qa,puzzle` | stub |
+| 7 | Auditor + remaining modes | stub |
+
+**Tests**: `tests/test_structure.py` (5) + `tests/test_move_judge.py` (6) — all green.
+Engine tests skip-guard on `shutil.which(STOCKFISH_PATH)`.
+
+**Next**: ship `move_judge.refute` + a narration endpoint to complete the
+"judge candidate moves" loop end-to-end. See *"What's left for the
+candidate-move scenario"* below.
+
 ## Mental model
 
 > **The LLM never knows chess.** It is an orchestrator and explainer; a
@@ -52,8 +77,8 @@ with state and validation. Routes are thin.
 
 | File | Status | Notes |
 |---|---|---|
-| `analysis/structure.py` | stub | Pure python-chess. No engine. |
-| `analysis/move_judge.py` | stub | Calls Stockfish via `tools._engine`. |
+| `analysis/structure.py` | partial | `describe_position` ✅ done; `pawn_structure`/`king_safety`/`piece_activity`/`material_imbalance` stub. |
+| `analysis/move_judge.py` | partial | `classify_move` ✅ done; `compare_candidates`/`refute`/`find_threats`/`mate_search` stub. |
 | `analysis/tactics.py` | stub (restored) | Engine + motif tagger. |
 | `retrieval/puzzles.py` | stub | One-time CSV → SQLite indexer + search. |
 | `retrieval/openings.py` | stub | Polyglot book + ECO names. |
@@ -75,30 +100,44 @@ with state and validation. Routes are thin.
 - `db.py`: added `puzzles`, `student_state`, `student_attempts`,
   `lesson_progress`, `opening_repertoire` tables.
 - `config.py`: added `OPENING_BOOK_PATH`, `TABLEBASE_PATH`, `LESSONS_DIR`,
-  `ENDGAME_DRILLS_DIR`, vocabulary thresholds (`EVAL_*_CP`, `CP_LOSS_*`).
-- `web/routes.py`: appended `/api/coach/*` stubs that delegate to
-  `coach.router.handle_turn`.
+  `ENDGAME_DRILLS_DIR`, and `EVAL_DECISIVE_CP / EVAL_WINNING_CP /
+  EVAL_EQUAL_CP` for system-prompt vocabulary. Move classification uses
+  the existing `*_WIN_PCT_THRESHOLD` constants — Lichess methodology.
+- `web/routes.py`: `/api/coach/*` stubs delegate to
+  `coach.router.handle_turn`. `/api/coach/classify-move` is fully wired
+  (opens a Stockfish handle, calls `tools.set_engine`, runs the tool).
+- `analysis/teach.py`: system prompt now prepends
+  `describe_position(fen).ascii` so the model doesn't have to parse FEN.
 
 ## Build order (dependencies first)
 
 The work falls into seven waves. Each wave ends in a green test.
 
-1. **Structure tools** (`analysis/structure.py`)
+1. **Structure tools** (`analysis/structure.py`) — *partial*
    - No external deps. Pure python-chess.
-   - Quickest win; unlocks `describe_position` for system-prompt prefixing.
-   - **Test**: feed each function a small set of hand-checked FENs.
+   - ✅ `describe_position` shipped + tested + injected into `teach.py`'s
+     system prompt.
+   - ⏳ `pawn_structure` / `king_safety` / `piece_activity` /
+     `material_imbalance` still stubs.
 
-2. **Move judgment** (`analysis/move_judge.py`)
+2. **Move judgment** (`analysis/move_judge.py`) — *partial*
    - Depends on Stockfish handle from `tools.set_engine`.
-   - `classify_move` is the highest-leverage tool — it powers the
-     candidate-move flow on its own.
-   - **Test**: for a known blunder FEN, assert `classification == "blunder"`
-     and `cp_loss >= CP_LOSS_BLUNDER`.
+   - ✅ `classify_move` shipped + tested. Reuses `cp_to_win_pct` +
+     `_classify_drop` from `engine.py`. Returns SAN/UCI of move + engine
+     best, eval_before/after (mover POV), cp_loss, win_pct_drop,
+     classification (best/excellent/good/inaccuracy/mistake/blunder/illegal),
+     is_only_move, and engine PV in SAN.
+   - **Test**: hanging-queen blunders that already cross **win_pct_drop
+     ≥ 30** classify as "blunder". A position where you're already
+     crushing (eval +1300cp) and drop the queen still classifies as
+     inaccuracy — by design (win-pct methodology).
+   - ⏳ `compare_candidates` / `refute` / `find_threats` / `mate_search`
+     still stubs.
 
 3. **Sanitizer + describe_position prefixing** (`coach/sanitizer.py`,
-   small edit to `analysis/teach.py`)
-   - Generalise the `_validate_demo_moves` pattern from `teach.py`.
-   - Inject `structure.describe_position(fen).ascii` into the system prompt.
+   small edit to `analysis/teach.py`) — *partial*
+   - ✅ `describe_position(fen).ascii` injected in `teach.py` system prompt.
+   - ⏳ `coach/sanitizer.verify` not yet implemented.
    - **Test**: hand-craft a draft mentioning an illegal move; assert
      sanitizer flags it.
 
@@ -267,14 +306,18 @@ piece relationship, weakness, plan) unless it came from a tool result this
 turn. If unsure, call a tool. If you cannot verify, say you don't know.
 
 VOCABULARY (use these exact thresholds when characterising evals):
-  - "decisive"   ≥ +500cp
-  - "winning"    ≥ +200cp
-  - "small edge" ≥ +50cp
-  - "equal"      |cp| < 50
+  - "decisive"   eval ≥ +500cp     (EVAL_DECISIVE_CP)
+  - "winning"    eval ≥ +200cp     (EVAL_WINNING_CP)
+  - "small edge" eval ≥ +50cp
+  - "equal"      |eval| < 50       (EVAL_EQUAL_CP)
 
-  - "blunder"    cp_loss ≥ 200
-  - "mistake"    cp_loss ≥ 100
-  - "inaccuracy" cp_loss ≥ 50
+Move classification (Lichess win-pct methodology — see
+`analysis/engine._classify_drop`). The classifier is deterministic; the
+LLM should NOT reclassify, only narrate using the label classify_move
+returned:
+  - "blunder"    win_pct_drop ≥ 30  (BLUNDER_WIN_PCT_THRESHOLD)
+  - "mistake"    win_pct_drop ≥ 20  (MISTAKE_WIN_PCT_THRESHOLD)
+  - "inaccuracy" win_pct_drop ≥ 10  (INACCURACY_WIN_PCT_THRESHOLD)
 
 MOVES: only mention moves that appear verbatim in a tool result this turn.
 Copy SAN/UCI exactly; do not paraphrase.
@@ -321,13 +364,39 @@ python -m gg_chess.retrieval.puzzles index ./data/lichess_db_puzzle.csv
 The current `/api/ask` and `teach_position` are the demoed Q&A flow.
 Don't remove them. Instead:
 
-1. Land all new modules as stubs (this PR — done).
-2. Implement structure + move_judge + sanitizer.
+1. ✅ Land all new modules as stubs (`138785b`).
+2. 🟡 Implement structure + move_judge + sanitizer. **In progress** —
+   `describe_position` and `classify_move` shipped; sanitizer + remaining
+   structure/move_judge functions pending.
 3. Implement `coach/modes/qa.py` as a parallel implementation; A/B test
    it behind a `?coach=v2` query param on `/api/ask`.
 4. When v2 is at parity, switch the route over and delete `teach.py`.
 5. New modes (puzzle, lesson, etc.) ship at their own `/api/coach/*` URL
    and don't touch `/api/ask`.
+
+## What's left for the candidate-move scenario
+
+The scenario: *user picks a position, plays a candidate move, AI corrects
+and discusses.* Concrete remaining work to ship this loop end-to-end:
+
+1. **`move_judge.refute(fen, move)`** — surfaces the engine's punishing
+   reply when the candidate is bad. Without it, the coach has numbers
+   but no concrete *why*. ~30 LoC on top of `classify_move`.
+2. **`/api/coach/judge-move` narration endpoint** — runs `classify_move`,
+   optionally `refute` for bad moves, then a 2-3 sentence LLM narration
+   over the JSON. Reuses `chat_stream`. ~50 LoC.
+3. **Frontend "judge this move" affordance** — a button on the existing
+   board that POSTs `{fen, move}` and renders the verdict.
+4. **(Optional) `coach/sanitizer.verify`** — gate the narration so the
+   LLM can't invent moves that aren't in the engine PV. Defer if shipping
+   speed matters more than zero-hallucination guarantees.
+
+What's NOT needed for this scenario:
+- Puzzle DB — only required for the *"give me a position"* half.
+- `compare_candidates` — single-move flow doesn't need ranking.
+- Student state, auditor, all other modes — none block this scenario.
+- Other structure tools (`pawn_structure`, etc.) — `describe_position`
+  is enough for narration.
 
 ## Frontend (out of scope here, but flagged)
 

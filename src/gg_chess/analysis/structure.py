@@ -112,4 +112,30 @@ def describe_position(fen: str) -> dict:
           "legal_moves_san": [str, ...],  # all legal moves in SAN
         }
     """
-    raise NotImplementedError
+    board = chess.Board(fen)
+    fen_parts = fen.split()
+    castling = fen_parts[2] if len(fen_parts) > 2 else "-"
+
+    by_square = []
+    for rank in range(7, -1, -1):
+        for file in range(8):
+            sq = chess.square(file, rank)
+            piece = board.piece_at(sq)
+            if piece is None:
+                continue
+            by_square.append({
+                "square": chess.square_name(sq),
+                "piece":  piece.symbol().upper(),
+                "color":  "white" if piece.color == chess.WHITE else "black",
+            })
+
+    return {
+        "fen":             fen,
+        "to_move":         "white" if board.turn == chess.WHITE else "black",
+        "castling_rights": castling,
+        "halfmove_clock":  board.halfmove_clock,
+        "fullmove_number": board.fullmove_number,
+        "ascii":           board.unicode(borders=True, empty_square="·"),
+        "by_square":       by_square,
+        "legal_moves_san": [board.san(m) for m in board.legal_moves],
+    }
